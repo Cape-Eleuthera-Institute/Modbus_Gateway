@@ -13,6 +13,7 @@ import random
 import socket
 import threading
 import time
+import struct
 
 from dotenv import load_dotenv
 from pymodbus.client import ModbusTcpClient
@@ -32,7 +33,7 @@ POLL_INTERVAL = 600 # poll every 10 mins
 
 # When true, no data is actually sent to TagoIO. Frames are logged/printed instead
 # so you can see exactly what would be pushed. Enable with DRY_RUN=1 (or true/yes).
-DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ("1", "true", "yes")
+DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() in ("1", "true", "yes")
 
 
 def _float_env(name: str, default: float) -> float:
@@ -96,7 +97,9 @@ def decode_register_value(registers, device_type):
     """Combine raw Modbus register words into a single value per encoding."""
     if device_type == "elkor_wattsOn":
         # 32 bit high endian concatenate
-        return int(str(registers[0]) + str(registers[1]))  # FIXME check for sign bit in docs
+        combined_hex = f"{registers[0]:04x}{registers[1]:04x}"
+        print(combined_hex)
+        return struct.unpack('>f', bytes.fromhex(combined_hex))[0]# FIXME check for sign bit in docs
     if device_type == "adam6051":
         # 32 bit high endian rollover bit
         return registers[0] + registers[1] * 65536
