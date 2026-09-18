@@ -1,3 +1,3 @@
-name,ip,serial,registers
-adam-6051-a,192.168.1.50,EXAMPLE_SERIAL_001,countfreq:0x18:1:16:uint32lohi
-adam-6051-b,192.168.1.51,EXAMPLE_SERIAL_002,countfreq:0x18:1:16:uint32lohi;total_count:0x20:2:32
+name,device_type,ip,serial,port,protocol,device_id,sensor
+adam-6051-a,adam6051,192.168.1.50,EXAMPLE_SERIAL_001,502,tcp,NA,sensor_location_1:24:2
+adam-6051-b,adam6051,192.168.1.51,EXAMPLE_SERIAL_002,502,tcp,NA,sensor_location_2:14:2;sensor_location_3:10:2
