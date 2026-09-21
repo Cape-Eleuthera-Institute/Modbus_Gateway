@@ -93,19 +93,12 @@ state_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 
 # Modify device transformations here
-def decode_register_value(registers, device_type):#FIXME figure out if its signed or unsigned
+def decode_register_value(registers, device_type):
     """Combine raw Modbus register words into a single value per encoding."""
     if device_type == "elkor_wattsOn":
         # 32 bit high endian concatenate
-        print(str(registers[0]))
-        print(hex(registers[0]))
-        print("Hello 0")
-        print(str(registers[1]))
-        print(hex(registers[1]))
-        print("Hello 1")
         packed_data = struct.pack(">HH", registers[1], registers[0])
         float_value = struct.unpack(">f", packed_data)[0]
-        print(float_value)
         return float_value
     if device_type == "adam6051":
         # 32 bit high endian rollover bit
