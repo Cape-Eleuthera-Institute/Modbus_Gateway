@@ -78,9 +78,9 @@ The script supports one or more register points per device. Columns:
 - `port`: modbus port
 - `protocol`: network protocol defined in `run_device()`. either 'tcp' or 'rtu_over_tcp'
 - `device_id`: device ID. only used for 'rtu_over_tcp' devices (1-6 for Elkor WattsOn)
-- `variable`: contains information about variables
+- `sensor`: contains information about variables
 
-`variables` format: `variable1:address:count;variable2:address:count...`
+`sensor` format: `sensor1:address:count;sensor2:address:count...`
 
 Eg: countfreq0:24:2 denotes a variable countfreq that uses two positions starting at register 24 (32 bit). Seprate variables coming from the same device as separated by semicolons
 
