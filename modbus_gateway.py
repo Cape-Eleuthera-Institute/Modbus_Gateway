@@ -181,6 +181,7 @@ def parse_str(value, default):
 def parse_register_points(row):
     # registers=sensor:address[:count[:rollover_bits]];...
     # serial/device id/sensor:address:count;...|...
+    # NOTE: did not write code to still be compatible with previous format ie adam devices will not work with this version unless rewritten in pollees
     text = (row.get("sensor") or "").strip()
     if not text:
         default_count = parse_int(row.get("register_count"), POLL_REGISTER_COUNT)
