@@ -5,12 +5,6 @@ Each thread polls Modbus/TCP (ADAM or similar), pushes readings to Tago.io via T
 over TCP, and persists last values for delta calculations.
 """
 
-import logging
-from pymodbus import pymodbus_apply_logging_config
-
-# This configures internal pymodbus loggers to print raw frame data
-pymodbus_apply_logging_config("DEBUG")
-
 import csv
 import json
 import logging
@@ -40,7 +34,7 @@ POLL_INTERVAL = 600 # poll every 10 mins
 
 # When true, no data is actually sent to TagoIO. Frames are logged/printed instead
 # so you can see exactly what would be pushed. Enable with DRY_RUN=1 (or true/yes).
-DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ("1", "true", "yes")
+DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() in ("1", "true", "yes")
 
 
 def _float_env(name: str, default: float) -> float:
@@ -144,9 +138,14 @@ def save_last_values_state(filepath, state):
         # Don't persist deltas learned during a dry run — they weren't real pushes.
         return
     temp_path = f"{filepath}.tmp"
-    with open(temp_path, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, sort_keys=True)
-    os.replace(temp_path, filepath)
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, sort_keys=True)
+        os.replace(temp_path, filepath)
+    except PermissionError:
+        print(state)
+        print("Permission blocked")
+        exit(1)
 
 # FIXME don't like the term rollover bits here??
 def compute_delta(current_value, previous_value):
@@ -160,7 +159,7 @@ def compute_delta(current_value, previous_value):
 # Device list (CSV)
 # ---------------------------------------------------------------------------
 
-# clean up integrers and use defaults if not available
+# clean up integers and use defaults if not available
 def parse_int(value, default):
     if value is None:
         return default
