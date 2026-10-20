@@ -14,6 +14,7 @@ import socket
 import threading
 import time
 import struct
+import tempfile
 
 from dotenv import load_dotenv
 from pymodbus.client import ModbusTcpClient
@@ -34,7 +35,7 @@ POLL_INTERVAL = 600 # poll every 10 mins
 
 # When true, no data is actually sent to TagoIO. Frames are logged/printed instead
 # so you can see exactly what would be pushed. Enable with DRY_RUN=1 (or true/yes).
-DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() in ("1", "true", "yes")
+DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ("1", "true", "yes")
 
 
 def _float_env(name: str, default: float) -> float:
@@ -137,15 +138,18 @@ def save_last_values_state(filepath, state):
     if DRY_RUN:
         # Don't persist deltas learned during a dry run — they weren't real pushes.
         return
-    temp_path = f"{filepath}.tmp"
+    #temp_path = f"{filepath}.tmp"
     try:
-        with open(temp_path, "w", encoding="utf-8") as f:
+        with tempfile.NamedTemporaryFile(mode='w', dir=".", delete=False, delete_on_close=False) as f:
             json.dump(state, f, indent=2, sort_keys=True)
-        os.replace(temp_path, filepath)
+            f.close()
+        #with open(temp_path, "w", encoding="utf-8") as f:
+        #    json.dump(state, f, indent=2, sort_keys=True)
+        os.replace(f.name, filepath)
+        print("success")
     except PermissionError:
         print(state)
         print("Permission blocked")
-        exit(1)
 
 # FIXME don't like the term rollover bits here??
 def compute_delta(current_value, previous_value):
@@ -619,6 +623,7 @@ def run_device(device):
                 device["last_values"][sensor_name] = value
                 with state_lock:
                     state.setdefault(serial, {})[sensor_name] = value
+                    print(f"{sensor_name}: {value}")
                     save_last_values_state(LAST_VALUES_FILE, state)
             else:
                 device["consecutive_errors"] = 0
