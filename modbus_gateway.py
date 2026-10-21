@@ -14,10 +14,12 @@ import socket
 import threading
 import time
 import struct
+import tempfile
 
 from dotenv import load_dotenv
 from pymodbus.client import ModbusTcpClient
 from pymodbus.exceptions import ConnectionException, ModbusException
+
 
 # ---------------------------------------------------------------------------
 # Configuration (env overrides where noted)
@@ -34,7 +36,7 @@ POLL_INTERVAL = 600 # poll every 10 mins
 # Dry run mode
 # When true, no data is actually sent to TagoIO. Frames are logged/printed instead
 # so you can see exactly what would be pushed. Enable with DRY_RUN=1 (or true/yes).
-DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ("1", "true", "yes")
+DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() in ("1", "true", "yes")
 
 
 def _float_env(name: str, default: float) -> float:
@@ -134,13 +136,26 @@ def load_last_values_state(filepath):
 
 
 def save_last_values_state(filepath, state):
-    if DRY_RUN:
-        # Don't persist deltas learned during a dry run — they weren't real pushes.
-        return
-    temp_path = f"{filepath}.tmp"
-    with open(temp_path, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, sort_keys=True)
-    os.replace(temp_path, filepath)
+    # if DRY_RUN:
+    #     # Don't persist deltas learned during a dry run — they weren't real pushes.
+    #     return
+    #temp_path = f"{filepath}.tmp"
+    for _ in range(5):
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', dir=".", delete=False, delete_on_close=False) as f:
+                json.dump(state, f, indent=2, sort_keys=True)
+                f.close()
+            #with open(temp_path, "w", encoding="utf-8") as f:
+            #    json.dump(state, f, indent=2, sort_keys=True)
+            os.replace(f.name, filepath)
+            # if os.path.exists(f.name):
+            #     os.unlink(f.name)
+            print("success")
+            return
+        except PermissionError:
+            print(state)
+            print("Permission blocked")
+            time.sleep(0.05)
 
 # FIXME don't like the term rollover bits here??
 def compute_delta(current_value, previous_value):
@@ -154,7 +169,7 @@ def compute_delta(current_value, previous_value):
 # Device list (CSV)
 # ---------------------------------------------------------------------------
 
-# clean up integrers and use defaults if not available
+# clean up integers and use defaults if not available
 def parse_int(value, default):
     if value is None:
         return default
@@ -173,7 +188,7 @@ def parse_str(value, default):
 
 # parse register points from pollees sheet
 def parse_register_points(row):
-    # registers=sensor:address[:count[:rollover_bits]];...
+    device_type = row.get("device_type").strip()
     text = (row.get("sensor") or "").strip()
     if not text:
         default_count = parse_int(row.get("register_count"), POLL_REGISTER_COUNT)
@@ -181,26 +196,60 @@ def parse_register_points(row):
             "sensor": (row.get("sensor_name") or TAGO_SENSOR_NAME).strip(),
             "address": parse_int(row.get("register_address"), POLL_REGISTER_ADDRESS),
             "count": default_count,
+            "dev_id": "NA",
+            "serial": row["serial"].strip()
         }]
     points = []
-    for raw_part in text.split(";"):
-        part = raw_part.strip()
-        if not part:
-            continue
-        pieces = [p.strip() for p in part.split(":")]
-        if len(pieces) not in (2, 3):
-            raise ValueError(
-                f"Invalid registers entry '{part}'. "
-                "Expected sensor:address[:count]"
-            )
-        points.append({
-            "sensor": pieces[0].lower(),
-            "address": int(pieces[1], 0),
-            "count": int(pieces[2], 0) if len(pieces) == 3 else 1,
-                })
-    if not points:
-        raise ValueError("registers field was provided but no valid entries were found")
-    return points
+    if device_type == "elkor_wattsOn":
+        # sensor column=serial/device id/sensor:address:count;...|...
+        for individual_device in text.split("|"):
+            subsections = [p.strip() for p in individual_device.split("/")]
+            serial = subsections[0]
+            dev_id = int(subsections[1])
+            sensors = subsections[2]
+                
+            for raw_part in sensors.split(";"):
+                part = raw_part.strip()
+                if not part:
+                    continue
+                pieces = [p.strip() for p in part.split(":")]
+                if len(pieces) not in (2, 3):
+                    raise ValueError(
+                        f"Invalid registers entry '{part}'. "
+                        "Expected sensor:address[:count]"
+                    )
+                points.append({
+                    "sensor": pieces[0].lower(),
+                    "address": int(pieces[1], 0),
+                    "count": int(pieces[2], 0) if len(pieces) == 3 else 1,
+                    "dev_id": dev_id, # maps to `slave=` in pymodbus
+                    "serial": serial,
+                        })
+            if not points:
+                raise ValueError("registers field was provided but no valid entries were found")
+        return points
+    else:
+        # sensor column=sensor:address[:count[:rollover_bits]];...
+        for raw_part in text.split(";"):
+            part = raw_part.strip()
+            if not part:
+                continue
+            pieces = [p.strip() for p in part.split(":")]
+            if len(pieces) not in (2, 3):
+                raise ValueError(
+                    f"Invalid registers entry '{part}'. "
+                    "Expected sensor:address[:count]"
+                )
+            points.append({
+                "sensor": pieces[0].lower(),
+                "address": int(pieces[1], 0),
+                "count": int(pieces[2], 0) if len(pieces) == 3 else 1,
+                "dev_id": "NA",
+                "serial": row["serial"].strip()
+                    })
+        if not points:
+            raise ValueError("registers field was provided but no valid entries were found")
+        return points
     
     
 def load_devices(filepath):
@@ -217,7 +266,6 @@ def load_devices(filepath):
                 "register_points": parse_register_points(row),
                 "protocol": parse_str(row.get("protocol"), "tcp"),
                 "port": parse_int(row.get("port"), ADAM_PORT),
-                "device_id":parse_int(row.get("device_id"), 1),
             })
     log.info("[%s] register_points: %s", row["name"].strip(), parse_register_points(row))
     log.info("Loaded %d device(s) from %s", len(devices), filepath)
@@ -241,7 +289,7 @@ class ModbusTCPDriver:
                 return
             time.sleep(5)
 
-    def read_registers(self, address, count):
+    def read_registers(self, address, count, device_id):
         return self.client.read_holding_registers(address=address, count=count)
 
     def close(self):
@@ -251,10 +299,9 @@ class ModbusTCPDriver:
 
 class ModbusRTUOverTCPDriver:
     """Modbus RTU framed over TCP — serial server devices."""
-    def __init__(self, ip, port, device_id):
+    def __init__(self, ip, port):
         self.ip = ip
         self.port = port          # e.g. 4001, 4002 — varies per serial server
-        self.device_id = device_id  # maps to `slave=` in pymodbus
         self.client = None
 
     def connect(self):
@@ -270,12 +317,12 @@ class ModbusRTUOverTCPDriver:
                 return
             time.sleep(5)
 
-    def read_registers(self, address, count):
+    def read_registers(self, address, count, device_id):
         # device_id is the RTU slave address
         return self.client.read_holding_registers(
             address=address,
             count=count,
-            device_id =self.device_id,
+            device_id =device_id,
         )
 
     def close(self):
@@ -455,7 +502,6 @@ def run_device(device):
         driver = ModbusRTUOverTCPDriver(
             ip=device["ip"],
             port=device["port"],
-            device_id=device["device_id"],
     )
     else:
         driver = ModbusTCPDriver(ip=device["ip"], port=device["port"])
@@ -523,10 +569,12 @@ def run_device(device):
                     continue
 
             for point in register_points:
+                serial = point["serial"]
                 try:
                     reg_result = driver.read_registers(
                         address=point["address"],
                         count=point["count"],
+                        device_id=point["dev_id"]
                     )
                 except OSError as e:
                     log.warning(
@@ -581,6 +629,7 @@ def run_device(device):
                 device["last_values"][sensor_name] = value
                 with state_lock:
                     state.setdefault(serial, {})[sensor_name] = value
+                    print(f"{sensor_name}: {value}")
                     save_last_values_state(LAST_VALUES_FILE, state)
             else:
                 device["consecutive_errors"] = 0
