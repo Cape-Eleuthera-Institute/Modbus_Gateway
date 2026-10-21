@@ -35,7 +35,7 @@ POLL_INTERVAL = 600 # poll every 10 mins
 
 # When true, no data is actually sent to TagoIO. Frames are logged/printed instead
 # so you can see exactly what would be pushed. Enable with DRY_RUN=1 (or true/yes).
-DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ("1", "true", "yes")
+DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() in ("1", "true", "yes")
 
 
 def _float_env(name: str, default: float) -> float:
@@ -135,21 +135,26 @@ def load_last_values_state(filepath):
 
 
 def save_last_values_state(filepath, state):
-    if DRY_RUN:
-        # Don't persist deltas learned during a dry run — they weren't real pushes.
-        return
+    # if DRY_RUN:
+    #     # Don't persist deltas learned during a dry run — they weren't real pushes.
+    #     return
     #temp_path = f"{filepath}.tmp"
-    try:
-        with tempfile.NamedTemporaryFile(mode='w', dir=".", delete=False, delete_on_close=False) as f:
-            json.dump(state, f, indent=2, sort_keys=True)
-            f.close()
-        #with open(temp_path, "w", encoding="utf-8") as f:
-        #    json.dump(state, f, indent=2, sort_keys=True)
-        os.replace(f.name, filepath)
-        print("success")
-    except PermissionError:
-        print(state)
-        print("Permission blocked")
+    for _ in range(5):
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', dir=".", delete=False, delete_on_close=False) as f:
+                json.dump(state, f, indent=2, sort_keys=True)
+                f.close()
+            #with open(temp_path, "w", encoding="utf-8") as f:
+            #    json.dump(state, f, indent=2, sort_keys=True)
+            os.replace(f.name, filepath)
+            # if os.path.exists(f.name):
+            #     os.unlink(f.name)
+            print("success")
+            return
+        except PermissionError:
+            print(state)
+            print("Permission blocked")
+            time.sleep(0.05)
 
 # FIXME don't like the term rollover bits here??
 def compute_delta(current_value, previous_value):
