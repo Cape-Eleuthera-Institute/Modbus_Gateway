@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from pymodbus.client import ModbusTcpClient
 from pymodbus.exceptions import ConnectionException, ModbusException
 
+
 # ---------------------------------------------------------------------------
 # Configuration (env overrides where noted)
 # ---------------------------------------------------------------------------
@@ -31,10 +32,9 @@ if not AUTH_HASH:
 ADAM_PORT = 502
 POLL_INTERVAL = 600 # poll every 10 mins
 
-# Dry run mode
 # When true, no data is actually sent to TagoIO. Frames are logged/printed instead
 # so you can see exactly what would be pushed. Enable with DRY_RUN=1 (or true/yes).
-DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ("1", "true", "yes")
+DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() in ("1", "true", "yes")
 
 
 def _float_env(name: str, default: float) -> float:
@@ -54,7 +54,7 @@ RECONNECT_INTERVAL_SEC = int(os.getenv("TAGO_SCHEDULED_RECONNECT_SEC", "3600"))
 
 TAGO_HOST = "tcp.tip.us-e1.tago.io"
 TAGO_PORT = 5693
-DEVICES_FILE = "pollees.csv"
+DEVICES_FILE = "new_pollees.csv"
 LOG_FILE = "poller.log"
 LAST_VALUES_FILE = "last_values.json"
 
@@ -140,7 +140,7 @@ def save_last_values_state(filepath, state):
     temp_path = f"{filepath}.tmp"
     with open(temp_path, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, sort_keys=True)
-    os.replace(temp_path, filepath)
+    os.replace(f.name, filepath)
 
 # FIXME don't like the term rollover bits here??
 def compute_delta(current_value, previous_value):
@@ -154,7 +154,7 @@ def compute_delta(current_value, previous_value):
 # Device list (CSV)
 # ---------------------------------------------------------------------------
 
-# clean up integrers and use defaults if not available
+# clean up integers and use defaults if not available
 def parse_int(value, default):
     if value is None:
         return default
@@ -171,57 +171,43 @@ def parse_str(value, default):
         return default
     return text
 
-# parse register points from pollees sheet
-def parse_register_points(row):
-    # registers=sensor:address[:count[:rollover_bits]];...
-    text = (row.get("sensor") or "").strip()
-    if not text:
-        default_count = parse_int(row.get("register_count"), POLL_REGISTER_COUNT)
-        return [{
-            "sensor": (row.get("sensor_name") or TAGO_SENSOR_NAME).strip(),
-            "address": parse_int(row.get("register_address"), POLL_REGISTER_ADDRESS),
-            "count": default_count,
-        }]
-    points = []
-    for raw_part in text.split(";"):
-        part = raw_part.strip()
-        if not part:
-            continue
-        pieces = [p.strip() for p in part.split(":")]
-        if len(pieces) not in (2, 3):
-            raise ValueError(
-                f"Invalid registers entry '{part}'. "
-                "Expected sensor:address[:count]"
-            )
-        points.append({
-            "sensor": pieces[0].lower(),
-            "address": int(pieces[1], 0),
-            "count": int(pieces[2], 0) if len(pieces) == 3 else 1,
-                })
-    if not points:
-        raise ValueError("registers field was provided but no valid entries were found")
-    return points
-    
-    
 def load_devices(filepath):
-    """Build device dicts with register_points[] used by the poll loop."""
-    devices = []
+    """Build dict of dicts, organized by IP/port, with register_points[] used by the poll loop."""
+    devices = {}
     with open(filepath, newline="") as f:
-        reader = csv.DictReader(f)
+        reader = csv.reader(f)
+        next(reader) # skips the header
         for row in reader:
-            devices.append({
-                "name": row["name"].strip(),
-                "ip": row["ip"].strip(),
-                "serial": row["serial"].strip(),
-                "device_type": parse_str(row.get("device_type"), "unknown"),
-                "register_points": parse_register_points(row),
-                "protocol": parse_str(row.get("protocol"), "tcp"),
-                "port": parse_int(row.get("port"), ADAM_PORT),
-                "device_id":parse_int(row.get("device_id"), 1),
-            })
-    log.info("[%s] register_points: %s", row["name"].strip(), parse_register_points(row))
-    log.info("Loaded %d device(s) from %s", len(devices), filepath)
+            if len(row) != 11:
+                raise ValueError(
+                    "Invalid entry: incorrect column number."
+                    "\nExpected 11 columns: variable_id,address,length,calculate_delta,device_id,serial,device_type,protocol,ip,port,connection_id."
+                    f"\nReceived {len(row)} columns."
+                    f"\nReceived: {row}"
+                                )
+            ip_port = row[8].strip() + ":" + parse_str(row[9], ADAM_PORT)
+            register_points = {
+                "variable": row[0].strip().lower(),
+                "address": parse_int(row[1].strip(), 0),
+                "count": parse_int(row[2].strip(), 0),
+                "calculate_delta": row[3].strip(),
+                "dev_id": parse_int(row[4].strip(), "NA"), # maps to `slave=` in pymodbus
+                "serial": row[5].strip()
+            }
+            if ip_port in devices:
+                devices[ip_port]["register_points"].append(register_points)
+            else:
+                devices[ip_port] = {
+                    "name": row[10].strip(),
+                    "protocol": parse_str(row[7], "tcp"),
+                    "device_type": parse_str(row[6], "unknown"),
+                    "register_points": [register_points],
+                    "default_serial": row[5].strip(),
+                    "ip": row[8].strip(),
+                    "port": parse_str(row[9], ADAM_PORT)}
+    log.info(f"Loaded {len(devices)} device(s) from {filepath}")
     return devices
+
 
 # ---------------------------------------------------------------------------
 # Modbus drivers (transport abstraction)
@@ -241,7 +227,7 @@ class ModbusTCPDriver:
                 return
             time.sleep(5)
 
-    def read_registers(self, address, count):
+    def read_registers(self, address, count, device_id):
         return self.client.read_holding_registers(address=address, count=count)
 
     def close(self):
@@ -251,10 +237,9 @@ class ModbusTCPDriver:
 
 class ModbusRTUOverTCPDriver:
     """Modbus RTU framed over TCP — serial server devices."""
-    def __init__(self, ip, port, device_id):
+    def __init__(self, ip, port):
         self.ip = ip
         self.port = port          # e.g. 4001, 4002 — varies per serial server
-        self.device_id = device_id  # maps to `slave=` in pymodbus
         self.client = None
 
     def connect(self):
@@ -270,12 +255,12 @@ class ModbusRTUOverTCPDriver:
                 return
             time.sleep(5)
 
-    def read_registers(self, address, count):
+    def read_registers(self, address, count, device_id):
         # device_id is the RTU slave address
         return self.client.read_holding_registers(
             address=address,
             count=count,
-            device_id =self.device_id,
+            device_id =device_id,
         )
 
     def close(self):
@@ -357,7 +342,7 @@ def reconnect_tago(device, *, log_connect=True):
             pass
     device["tago_socket"] = connect_tago(name, log_success=log_connect)
     device["tago_connect_time"] = time.time()
-    ping_frame = f"PING|{AUTH_HASH}|{device['serial']}\n"
+    ping_frame = f"PING|{AUTH_HASH}|{device['default_serial']}\n"
     try:
         ack = send_frame(device["tago_socket"], ping_frame, ack_timeout=6)
         if ack and "ERR" in ack:
@@ -392,7 +377,7 @@ def maintain_tago_socket_during_idle(device, total_sleep_seconds):
         return
 
     deadline = time.time() + total_sleep_seconds
-    serial = device["serial"]
+    serial = device["default_serial"]
     name = device["name"]
 
     while time.time() < deadline:
@@ -448,14 +433,13 @@ def run_device(device):
 
     
     name = device["name"]
-    serial = device["serial"]
+    serial = device["default_serial"]
     register_points = device["register_points"]
 
     if device["protocol"] == "rtu_over_tcp":
         driver = ModbusRTUOverTCPDriver(
             ip=device["ip"],
             port=device["port"],
-            device_id=device["device_id"],
     )
     else:
         driver = ModbusTCPDriver(ip=device["ip"], port=device["port"])
@@ -475,9 +459,9 @@ def run_device(device):
         serial_state = state.get(serial, {})
         if isinstance(serial_state, dict):
             for point in register_points:
-                value = serial_state.get(point["sensor"])
+                value = serial_state.get(point["variable"])
                 if isinstance(value, int):
-                    device["last_values"][point["sensor"]] = value 
+                    device["last_values"][point["variable"]] = value 
 
     first_modbus_poll = True
 
@@ -523,10 +507,12 @@ def run_device(device):
                     continue
 
             for point in register_points:
+                serial = point["serial"]
                 try:
                     reg_result = driver.read_registers(
                         address=point["address"],
                         count=point["count"],
+                        device_id=point["dev_id"]
                     )
                 except OSError as e:
                     log.warning(
@@ -541,7 +527,7 @@ def run_device(device):
                 if reg_result is None or reg_result.isError():
                     log.warning(
                         "[%s] Modbus read failed for %s (address=%s, count=%s) — reconnecting Modbus...",
-                        name, point["sensor"], point["address"], point["count"],
+                        name, point["variable"], point["address"], point["count"],
                     )
                     client.close()
                     device["modbus"] = device["driver"].connect()
@@ -549,14 +535,14 @@ def run_device(device):
                     break
 
                 value = decode_register_value(reg_result.registers, device["device_type"])
-                sensor_name = point["sensor"]
-                previous_value = device["last_values"].get(sensor_name)
+                variable_name = point["variable"]
+                previous_value = device["last_values"].get(variable_name)
 
                 encoding = point.get("encoding", "uint16") #uint16 as default if no encoding provided
 
                 delta = compute_delta(value, previous_value)
 
-                frame = f"PUSH|{AUTH_HASH}|{serial}|[{sensor_name}:={value}]\n"
+                frame = f"PUSH|{AUTH_HASH}|{serial}|[{variable_name}:={value}]\n"
                 try:
                     ack = send_frame(tago_socket, frame, ack_timeout=8)
                 except (ConnectionResetError, BrokenPipeError, OSError) as e:
@@ -568,7 +554,7 @@ def run_device(device):
         
 
                 if device["device_type"] != "adam6017": # do not compute deltas when analog input 16 as in 6017
-                    delta_frame = f"PUSH|{AUTH_HASH}|{serial}|[{sensor_name}_delta:={delta}]\n"
+                    delta_frame = f"PUSH|{AUTH_HASH}|{serial}|[{variable_name}_delta:={delta}]\n"
                     try:
                         delta_ack = send_frame(tago_socket, delta_frame, ack_timeout=8)
                     except (ConnectionResetError, BrokenPipeError, OSError) as e:
@@ -578,9 +564,9 @@ def run_device(device):
                     if delta_ack and "ERR" in delta_ack:
                         raise ConnectionAbortedError(f"TagoIO returned error ACK: {delta_ack}")
 
-                device["last_values"][sensor_name] = value
+                device["last_values"][variable_name] = value
                 with state_lock:
-                    state.setdefault(serial, {})[sensor_name] = value
+                    state.setdefault(serial, {})[variable_name] = value
                     save_last_values_state(LAST_VALUES_FILE, state)
             else:
                 device["consecutive_errors"] = 0
@@ -626,8 +612,8 @@ devices = load_devices(DEVICES_FILE)
 state = load_last_values_state(LAST_VALUES_FILE)
 
 for _dev in devices:
-    threading.Thread(target=run_device, args=(_dev,), daemon=True).start()
-    log.info("Started thread for [%s]", _dev["name"])
+    threading.Thread(target=run_device, args=(devices[_dev],), daemon=True).start()
+    log.info("Started thread for [%s]", devices[_dev]["name"])
 
 try:
     while True:
