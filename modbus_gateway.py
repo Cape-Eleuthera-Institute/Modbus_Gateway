@@ -181,7 +181,7 @@ def load_devices(filepath):
             if len(row) != 11:
                 raise ValueError(
                     "Invalid entry: incorrect column number."
-                    "\nExpected 11 columns: variable_id,address,length,calculate_delta,device_id,serial,device_type,protocol,ip,port,connection_id."
+                    "\nExpected 11 columns: variable_id,address,count,calculate_delta,device_id,serial,device_type,protocol,ip,port,connection_id."
                     f"\nReceived {len(row)} columns."
                     f"\nReceived: {row}"
                                 )
@@ -553,7 +553,7 @@ def run_device(device):
                     raise ConnectionAbortedError(f"TagoIO returned error ACK: {ack}")
         
 
-                if device["device_type"] != "adam6017": # do not compute deltas when analog input 16 as in 6017
+                if point["calculate_delta"] != "N": # do not compute deltas when analog input 16 as in 6017
                     delta_frame = f"PUSH|{AUTH_HASH}|{serial}|[{variable_name}_delta:={delta}]\n"
                     try:
                         delta_ack = send_frame(tago_socket, delta_frame, ack_timeout=8)
