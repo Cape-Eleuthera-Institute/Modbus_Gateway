@@ -19,7 +19,6 @@ from dotenv import load_dotenv
 from pymodbus.client import ModbusTcpClient
 from pymodbus.exceptions import ConnectionException, ModbusException
 
-
 # ---------------------------------------------------------------------------
 # Configuration (env overrides where noted)
 # ---------------------------------------------------------------------------
@@ -32,9 +31,10 @@ if not AUTH_HASH:
 ADAM_PORT = 502
 POLL_INTERVAL = 600 # poll every 10 mins
 
+# Dry run mode
 # When true, no data is actually sent to TagoIO. Frames are logged/printed instead
 # so you can see exactly what would be pushed. Enable with DRY_RUN=1 (or true/yes).
-DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() in ("1", "true", "yes")
+DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ("1", "true", "yes")
 
 
 def _float_env(name: str, default: float) -> float:
@@ -54,7 +54,7 @@ RECONNECT_INTERVAL_SEC = int(os.getenv("TAGO_SCHEDULED_RECONNECT_SEC", "3600"))
 
 TAGO_HOST = "tcp.tip.us-e1.tago.io"
 TAGO_PORT = 5693
-DEVICES_FILE = "new_pollees.csv"
+DEVICES_FILE = "pollees.csv"
 LOG_FILE = "poller.log"
 LAST_VALUES_FILE = "last_values.json"
 
@@ -140,7 +140,7 @@ def save_last_values_state(filepath, state):
     temp_path = f"{filepath}.tmp"
     with open(temp_path, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, sort_keys=True)
-    os.replace(f.name, filepath)
+    os.replace(temp_path, filepath)
 
 # FIXME don't like the term rollover bits here??
 def compute_delta(current_value, previous_value):
@@ -172,7 +172,7 @@ def parse_str(value, default):
     return text
 
 def load_devices(filepath):
-    """Build dict of dicts, organized by IP/port, with register_points[] used by the poll loop."""
+    """Build dict of dicts of devices, organized by IP/port, with register_points[] used by the poll loop."""
     devices = {}
     with open(filepath, newline="") as f:
         reader = csv.reader(f)
@@ -207,7 +207,6 @@ def load_devices(filepath):
                     "port": parse_str(row[9], ADAM_PORT)}
     log.info(f"Loaded {len(devices)} device(s) from {filepath}")
     return devices
-
 
 # ---------------------------------------------------------------------------
 # Modbus drivers (transport abstraction)
@@ -260,7 +259,7 @@ class ModbusRTUOverTCPDriver:
         return self.client.read_holding_registers(
             address=address,
             count=count,
-            device_id =device_id,
+            device_id=device_id,
         )
 
     def close(self):
