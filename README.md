@@ -25,7 +25,7 @@ These devices use RTU over TCP rather than just straight up TCP. They connect to
 
 These devices are used to report on wattage. They can be wired in serial accross three 6 devices (`device_id`) in `pollees.csv` and can have up to three channels that report on voltage and amps. 
 
-[Elkor WattsOn Manual](https://www.elkor.net/pdfs/WattsOn-Mark_II_Manual_Complete.pdf). 
+[Elkor WattsOn Manual](https://www.elkor.net/pdfs/WattsOn_Manual.pdf). 
 
 ### Quick Network Tips
 * In cmd, run `arp -a` to see the list of devices previously connected to PC. 
