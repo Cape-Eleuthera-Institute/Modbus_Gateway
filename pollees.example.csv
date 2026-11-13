@@ -1,3 +1,3 @@
-name,device_type,ip,serial,port,protocol,device_id,sensor
-device_name1,adam6051,EXAMPLE_IP1,EXAMPLE_SERIAL001,000,tcp, NA, countfreq:0x18:1:16:uint32lohi
-device_name2,elkor_wattsOn,EXAMPLE_IP2, EXAMPLE_SERIAL_002,001, rtu_over_tcp,1, countfreq:0x18:1:16:uint32lohi;total_count:0x20:2:32
+variable_id,address,count,calculate_delta,device_id,serial,device_type,protocol,ip,port,connection_id
+variable_name1,16,1,N,NA,EXAMPLE_SERIAL001,adam6051,tcp,EXAMPLE_IP1,502,connection_name1
+variable_name2,804,2,Y,1,EXAMPLE_SERIAL_002,elkor_wattsOn,rtu_over_tcp,EXAMPLE_IP2,4660,connection_name2
