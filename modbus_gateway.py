@@ -34,7 +34,7 @@ POLL_INTERVAL = 600 # poll every 10 mins
 # Dry run mode
 # When true, no data is actually sent to TagoIO. Frames are logged/printed instead
 # so you can see exactly what would be pushed. Enable with DRY_RUN=1 (or true/yes).
-DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ("1", "true", "yes")
+DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() in ("1", "true", "yes")
 
 
 def _float_env(name: str, default: float) -> float:
@@ -54,7 +54,7 @@ RECONNECT_INTERVAL_SEC = int(os.getenv("TAGO_SCHEDULED_RECONNECT_SEC", "3600"))
 
 TAGO_HOST = "tcp.tip.us-e1.tago.io"
 TAGO_PORT = 5693
-DEVICES_FILE = "pollees.csv"
+DEVICES_FILE = "test_pollees.csv"
 LOG_FILE = "poller.log"
 LAST_VALUES_FILE = "last_values.json"
 
@@ -111,6 +111,11 @@ def decode_register_value(registers, device_type):
     if device_type == "kta282":
         return registers[0]
     # Default: 16 bit
+    if device_type == "solark":
+        if len(registers) == 1:
+            return registers[0]
+        else:
+            return registers[0] + registers[1]
     return registers[0]
 
 # ---------------------------------------------------------------------------
