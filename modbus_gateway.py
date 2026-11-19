@@ -34,7 +34,7 @@ POLL_INTERVAL = 600 # poll every 10 mins
 # Dry run mode
 # When true, no data is actually sent to TagoIO. Frames are logged/printed instead
 # so you can see exactly what would be pushed. Enable with DRY_RUN=1 (or true/yes).
-DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ("1", "true", "yes")
+DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() in ("1", "true", "yes")
 
 
 def _float_env(name: str, default: float) -> float:
@@ -54,7 +54,7 @@ RECONNECT_INTERVAL_SEC = int(os.getenv("TAGO_SCHEDULED_RECONNECT_SEC", "3600"))
 
 TAGO_HOST = "tcp.tip.us-e1.tago.io"
 TAGO_PORT = 5693
-DEVICES_FILE = "pollees.csv"
+DEVICES_FILE = "test_pollees.csv"
 LOG_FILE = "poller.log"
 LAST_VALUES_FILE = "last_values.json"
 
@@ -94,7 +94,7 @@ state_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 
 # Modify device transformations here
-def decode_register_value(registers, device_type):
+def decode_register_value(registers, device_type, data_type):
     """Combine raw Modbus register words into a single value per encoding."""
     if device_type == "elkor_wattsOn":
         # 32 bit high endian concatenate
@@ -110,6 +110,19 @@ def decode_register_value(registers, device_type):
         return (registers[0] / 65535) * 20 
     if device_type == "kta282":
         return registers[0]
+    if data_type == "uint16":
+        return registers[0]
+    if data_type == "int16":
+        # 2s complement for signed int
+        if registers[0] >= (1 << 15):
+            registers[0] -= (1 << 16)
+        return registers[0]
+    if data_type == "uint32":
+        return registers[0] + registers[1]
+    if data_type == "int32":
+        raw_bytes = struct.pack('<HH', registers[0], registers[1])
+        signed_32bit = struct.unpack('<i', raw_bytes)[0]
+        return signed_32bit
     # Default: 16 bit
     return registers[0]
 
@@ -178,33 +191,34 @@ def load_devices(filepath):
         reader = csv.reader(f)
         next(reader) # skips the header
         for row in reader:
-            if len(row) != 11:
+            if len(row) != 12:
                 raise ValueError(
                     "Invalid entry: incorrect column number."
-                    "\nExpected 11 columns: variable_id,address,count,calculate_delta,device_id,serial,device_type,protocol,ip,port,connection_id."
+                    "\nExpected 12 columns: variable_id,address,count,calculate_delta,device_id,serial,data_type,device_type,protocol,ip,port,connection_id."
                     f"\nReceived {len(row)} columns."
                     f"\nReceived: {row}"
                                 )
-            ip_port = row[8].strip() + ":" + parse_str(row[9], ADAM_PORT)
+            ip_port = row[9].strip() + ":" + parse_str(row[10], ADAM_PORT)
             register_points = {
                 "variable": row[0].strip().lower(),
                 "address": parse_int(row[1].strip(), 0),
                 "count": parse_int(row[2].strip(), 0),
                 "calculate_delta": row[3].strip(),
                 "dev_id": parse_int(row[4].strip(), "NA"), # maps to `slave=` in pymodbus
-                "serial": row[5].strip()
+                "serial": row[5].strip(),
+                "data_type": row[6].strip()
             }
             if ip_port in devices:
                 devices[ip_port]["register_points"].append(register_points)
             else:
                 devices[ip_port] = {
-                    "name": row[10].strip(),
-                    "protocol": parse_str(row[7], "tcp"),
-                    "device_type": parse_str(row[6], "unknown"),
+                    "name": row[11].strip(),
+                    "protocol": parse_str(row[8], "tcp"),
+                    "device_type": parse_str(row[7], "unknown"),
                     "register_points": [register_points],
                     "default_serial": row[5].strip(),
-                    "ip": row[8].strip(),
-                    "port": parse_str(row[9], ADAM_PORT)}
+                    "ip": row[9].strip(),
+                    "port": parse_str(row[10], ADAM_PORT)}
     log.info(f"Loaded {len(devices)} device(s) from {filepath}")
     return devices
 
@@ -533,7 +547,7 @@ def run_device(device):
                     client = device["modbus"]
                     break
 
-                value = decode_register_value(reg_result.registers, device["device_type"])
+                value = decode_register_value(reg_result.registers, device["device_type"], point["data_type"])
                 variable_name = point["variable"]
                 previous_value = device["last_values"].get(variable_name)
 
