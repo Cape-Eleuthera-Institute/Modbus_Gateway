@@ -34,7 +34,7 @@ POLL_INTERVAL = 600 # poll every 10 mins
 # Dry run mode
 # When true, no data is actually sent to TagoIO. Frames are logged/printed instead
 # so you can see exactly what would be pushed. Enable with DRY_RUN=1 (or true/yes).
-DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ("1", "true", "yes")
+DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() in ("1", "true", "yes")
 
 
 def _float_env(name: str, default: float) -> float:
@@ -132,15 +132,23 @@ def load_last_values_state(filepath):
         log.warning("Failed to load state file %s (%s). Starting empty.", filepath, e)
         return {}
 
+DRY_RUN_STATE_FILE = "last_values.dryrun.json"
 
 def save_last_values_state(filepath, state):
     if DRY_RUN:
-        # Don't persist deltas learned during a dry run — they weren't real pushes.
-        return
+        filepath = DRY_RUN_STATE_FILE   # same code path, separate file
     temp_path = f"{filepath}.tmp"
     with open(temp_path, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, sort_keys=True)
-    os.replace(temp_path, filepath)
+
+    for attempt in range(1, 6):
+        try:
+            os.replace(temp_path, filepath)
+            return
+        except PermissionError as e:
+            log.warning("State save blocked (attempt %s/5): %s", attempt, e)
+            time.sleep(0.2)
+    log.error("State save failed after 5 attempts, skipping this write")
 
 # FIXME don't like the term rollover bits here??
 def compute_delta(current_value, previous_value):
