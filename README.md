@@ -119,16 +119,26 @@ The function `decode_register_value()` defines each device's encoding and unit c
 
 ### Delta behavior and persisted state
 
-For each configured register point, the gateway sends a current value and delta. 
+For each configured register point, the gateway sends the current value. It also sends a delta, which is the change since the previous reading.
 
 How `delta` is calculated:
 
-- First sample after startup has no previous value, so `delta = 0`
+- If there is no previous value (first run, or a variable not yet saved), `delta = 0`
 - Normal case: `delta = current - previous`
-- If value wraps and `rollover_bits` is configured, rollover math is applied
-- Negative values without a valid rollover are treated as reset/noise and sent as `0`
+- If the result is negative (for example, a counter reset or rollover), `delta` is sent as `0`
+- Set `calculate_delta` to `N` in `pollees.csv` to skip the delta for a point, such as analog inputs
 
-Previous values are persisted in `last_values.json` so deltas continue across restarts.
+Previous values are persisted in `last_values.json` so deltas continue across restarts. In dry run mode, values are saved to `last_values_dryrun.json` instead, so real saved values are never overwritten.
+
+## Thread Safety: `state_lock` and `save_lock`
+
+The gateway runs one thread per device, and all threads share the in-memory `state` dictionary and the `last_values.json` file. Two locks keep them from interfering with each other.
+
+`state_lock` protects the shared `state` dictionary. A thread holds it only for the brief moment it reads its starting values at startup, updates a value after a successful push, or copies the dictionary before saving. 
+
+`save_lock` protects the file write itself, so only one thread at a time can write `last_values.json.tmp` and swap it into place.
+
+The two are kept separate on purpose. Disk writes are slow, and writing outside `state_lock` means a slow save never blocks other threads from updating their values. Each poll cycle, a thread copies the state under `state_lock`, releases it, and then saves the copy under `save_lock`. Saving is best effort: if the file is briefly locked by another program (for example, antivirus or File Explorer on Windows), the save retries a few times and then waits for the next poll cycle rather than interrupting data collection.
 
 ### TagoTIP TCP timing (disconnects / `keep_alive_timeout`)
 
