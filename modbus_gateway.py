@@ -246,19 +246,20 @@ def load_devices(filepath):
                 "count": parse_int(row[2].strip(), 0),
                 "calculate_delta": row[3].strip(),
                 "dev_id": parse_int(row[4].strip(), "NA"), # maps to `slave=` in pymodbus
-                "serial": row[5].strip()
+                "serial": row[5].strip(),
+                "data_type_device": row[7].strip()
             }
             if ip_port in devices:
                 devices[ip_port]["register_points"].append(register_points)
             else:
                 devices[ip_port] = {
-                    "name": row[10].strip(),
-                    "protocol": parse_str(row[7], "tcp"),
+                    "name": row[11].strip(),
+                    "protocol": parse_str(row[8], "tcp"),
                     "device_type": parse_str(row[6], "unknown"),
                     "register_points": [register_points],
                     "default_serial": row[5].strip(),
-                    "ip": row[8].strip(),
-                    "port": parse_str(row[9], ADAM_PORT)}
+                    "ip": row[9].strip(),
+                    "port": parse_str(row[10], ADAM_PORT)}
     log.info(f"Loaded {len(devices)} device(s) from {filepath}")
     return devices
 
@@ -584,7 +585,7 @@ def run_device(device):
                     driver.connect()
                     break
 
-                value = decode_register_value(reg_result.registers, device["device_type"])
+                value = decode_register_value(reg_result.registers, device["device_type"], point["data_type_device"])
                 variable_name = point["variable"]
                 previous_value = device["last_values"].get(variable_name)
 
