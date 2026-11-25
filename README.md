@@ -114,7 +114,7 @@ The function `decode_register_value()` defines each device's encoding and unit c
 |-------- | ------- |------- |------- |
 |ADAM 6051 | 32 | registers[0] + registers[1] * 65536 |
 |ADAM 6017 |  16 |(registers[0] / 65535) * 10 |
-|Elkor WattsOn | 32 | FIXME |
+|Elkor WattsOn | 32 | 2 unsigned int > single 32 bit signed float with struct package |
 |kta282 | 16 | registers[0] |
 
 ### Delta behavior and persisted state

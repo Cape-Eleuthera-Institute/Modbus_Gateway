@@ -102,7 +102,7 @@ def decode_register_value(registers, device_type):
         # when maximum of mA range is 20
         return (registers[0] / 65535) * 20 
     if device_type == "elkor_wattsOn":
-        # FIXME
+        # Recieve 2 unsigned integers and convert to 32 bit signed float with struct
         packed_data = struct.pack(">HH", registers[0], registers[1])
         float_value = struct.unpack(">f", packed_data)[0]
         return float_value
