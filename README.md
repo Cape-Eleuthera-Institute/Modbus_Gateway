@@ -65,38 +65,35 @@ One of the major libraries used in the script is `[pymodbus](https://pymodbus.re
 
 ### Secrets
 - `.env` contains a hash code for talking to Tago. It can be found in Tago under Devices > Authorization (top right). [More here](https://docs.tago.io/docs/tagotip/specification/tagotip-specification#2-credentials). This file is also not shared for sercurity purposes. For an example see [`.env.example`](/.env.example). 
-- `pollees.csv` contains a list of pollees (AKA devices AKA clients), with a name, IP address, serial number, and registers to read and encoding (16/32 hilo or lohi). It is not pushed to this github for security purposes, but must be in the folder to run the gateway script. See [`pollees.example.csv`](/pollees.example.csv) for an example. 
+- `pollees.csv` contains a list of variables that connect to devices (AKA clients) with a name, IP address, serial number, and registers to read and encoding (16/32 hilo or lohi). It is not pushed to this repo for security purposes, but must be in the folder to run the gateway script. See [`pollees.example.csv`](/pollees.example.csv) for an example. 
 
 
 ### `pollees.csv` format
 
-The script supports one or more register points per device. Columns:
+In pollees.csv, each entry is a variable to be sent to Tago. Columns:
 
-- `name`: the internal name for the device
-- `device_type`: one of the device types defined in the script's encoding section
-- `ip`: device IP address
-- `port`: modbus port
-- `protocol`: network protocol defined in `run_device()`. either 'tcp' or 'rtu_over_tcp'
-- `device_id`: device ID. only used for 'rtu_over_tcp' devices (1-6 for Elkor WattsOn)
-- `sensor`: contains information about variables
-
-`sensor` format: `sensor1:address:count;sensor2:address:count...`
-
-Eg: countfreq0:24:2 denotes a variable countfreq that uses two positions starting at register 24 (32 bit). Seprate variables coming from the same device as separated by semicolons
-
-- `address` can be hex (`0x18`) or decimal (`24`)
-- `count` defaults to `1` and is the number of registers to be read starting at the stated address
+- `variable_id`: Internal variable name
+- `address`: Starting register on which read begins in raw decimal format
+- `count`: Number of registers to read. Defaults to `1` and is the number of registers to be read starting at the stated address
+- `calculate_delta`: Y/N for whether a delta should be calculated between readings
+- `device_id`: For serial servers connecting of TCP over RTU. A number
+- `serial`: Serial number for the device
+- `device_type`: Model number for device (ed: adam6051). Correspond to devices defined in the `decode_register_value` function in the script
+- `protocol`: Network protocol defined in `run_device()`. either 'tcp' or 'rtu_over_tcp'
+- `ip`: Device IP address
+- `port`: Modbus port
+- `connection_id`: Aggregates devices for Tago (eg: treehouse)
 
 
 Example:
 
 ```csv
-name,device_type,ip,serial,port,protocol,device_id,variable
-device1,adam6051,0.0.0.0,serialnumber1,502,tcp,NA,countfreq0:24:2;countfreq1:26:2
-device2,adam6017,0.0.0.0,serialnumber2,502,tcp,NA,volts:7:1
+variable_id,address,count,calculate_delta,device_id,serial,device_type,protocol,ip,port,connection_id
+variable_name1,16,1,N,NA,EXAMPLE_SERIAL001,adam6051,tcp,EXAMPLE_IP1,502,connection_name1
+variable_name2,804,2,Y,1,EXAMPLE_SERIAL_002,elkor_wattsOn,rtu_over_tcp,EXAMPLE_IP2,4660,connection_name2
 ```
 ### Testing Mode
-Set DRY_RUN = "True" to implement testing mode. It will poll devices and print the corresponding Tago frames to the console but will not send those frames to Tago. Turn on when running from local computer instead of the server. 
+Set DRY_RUN = "True" to implement testing mode. It will poll devices and print the corresponding Tago frames to the console but will not send those frames to Tago. It will also save last values to a temp file called `last_values_dryrun.json`. Turn on when running from local computer instead of the server or when testing. 
 
 
 ### About Modbus Address Notation
@@ -113,24 +110,35 @@ The ADAM manual works with the full 5 digit modbus addresses. The Pymodbus packa
 
 The function `decode_register_value()` defines each device's encoding and unit conversion needs. Based on whether a device is sending 16/32/64 bit signals over registers, encoding and unit conversion are nessary. Some devices send information over 2 registers (32 bit) and others a single one (16 bit). 
 
-| Device | Bits | Engineering Unit | Conversion Formula |
+| Device | Bits | Conversion Formula |
 |-------- | ------- |------- |------- |
-|ADAM 6051 | 32 | count | registers[0] + registers[1] * 65536 |
-|ADAM 6017 |  16 | Volts | (registers[0] / 65535) * 10 |
-|Elkor WattsOn | 32 | KwH | concatonate 2 values // int(str(registers[0]) + str(registers[1])) |
+|ADAM 6051 | 32 | registers[0] + registers[1] * 65536 |
+|ADAM 6017 |  16 |(registers[0] / 65535) * 10 |
+|Elkor WattsOn | 32 | 2 unsigned int > single 32 bit signed float with struct package |
+|kta282 | 16 | registers[0] |
 
 ### Delta behavior and persisted state
 
-For each configured register point, the gateway sends a current value and delta. 
+For each configured register point, the gateway sends the current value. It also sends a delta, which is the change since the previous reading.
 
 How `delta` is calculated:
 
-- First sample after startup has no previous value, so `delta = 0`
+- If there is no previous value (first run, or a variable not yet saved), `delta = 0`
 - Normal case: `delta = current - previous`
-- If value wraps and `rollover_bits` is configured, rollover math is applied
-- Negative values without a valid rollover are treated as reset/noise and sent as `0`
+- If the result is negative (for example, a counter reset or rollover), `delta` is sent as `0`
+- Set `calculate_delta` to `N` in `pollees.csv` to skip the delta for a point, such as analog inputs
 
-Previous values are persisted in `last_values.json` so deltas continue across restarts.
+Previous values are persisted in `last_values.json` so deltas continue across restarts. In dry run mode, values are saved to `last_values_dryrun.json` instead, so real saved values are never overwritten.
+
+## Thread Safety: `state_lock` and `save_lock`
+
+The gateway runs one thread per device, and all threads share the in-memory `state` dictionary and the `last_values.json` file. Two locks keep them from interfering with each other.
+
+`state_lock` protects the shared `state` dictionary. A thread holds it only for the brief moment it reads its starting values at startup, updates a value after a successful push, or copies the dictionary before saving. 
+
+`save_lock` protects the file write itself, so only one thread at a time can write `last_values.json.tmp` and swap it into place.
+
+The two are kept separate on purpose. Disk writes are slow, and writing outside `state_lock` means a slow save never blocks other threads from updating their values. Each poll cycle, a thread copies the state under `state_lock`, releases it, and then saves the copy under `save_lock`. Saving is best effort: if the file is briefly locked by another program (for example, antivirus or File Explorer on Windows), the save retries a few times and then waits for the next poll cycle rather than interrupting data collection.
 
 ### TagoTIP TCP timing (disconnects / `keep_alive_timeout`)
 
