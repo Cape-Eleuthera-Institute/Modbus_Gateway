@@ -35,7 +35,7 @@ POLL_INTERVAL = 30 # poll every 10 mins #FIXME
 # When true, no data is actually sent to TagoIO. Frames are logged/printed instead
 # so you can see exactly what would be pushed. Enable with DRY_RUN=1 (or true/yes).
 # Use state file for a temp dry run last values save
-DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ("1", "true", "yes")
+DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() in ("1", "true", "yes")
 DRY_RUN_STATE_FILE = "last_values_dryrun.json"
 
 def _float_env(name: str, default: float) -> float:
@@ -94,11 +94,6 @@ if DRY_RUN:
 # Modify device transformations here
 def decode_register_value(registers, device_type):
     """Combine raw Modbus register words into a single value per encoding."""
-    if device_type == "elkor_wattsOn":
-        # 32 bit high endian concatenate
-        packed_data = struct.pack(">HH", registers[0], registers[1])
-        float_value = struct.unpack(">f", packed_data)[0]
-        return float_value
     if device_type == "adam6051":
         # 32 bit high endian rollover bit
         return registers[0] + registers[1] * 65536
@@ -106,6 +101,11 @@ def decode_register_value(registers, device_type):
         # 16 bit analog input with single register
         # when maximum of mA range is 20
         return (registers[0] / 65535) * 20 
+    if device_type == "elkor_wattsOn":
+        # FIXME
+        packed_data = struct.pack(">HH", registers[0], registers[1])
+        float_value = struct.unpack(">f", packed_data)[0]
+        return float_value
     if device_type == "kta282":
         return registers[0]
     # Default: 16 bit
@@ -622,9 +622,8 @@ def run_device(device):
 
         except (ModbusException, ConnectionException) as e:
             log.error("[%s] Modbus error (%s) — reconnecting...", name, e)
-            try:
-                driver.close()
-                driver.connect()
+            driver.close()
+            driver.connect()
 
         except Exception as e:
             log.error("[%s] Unexpected error (%s)", name, e)
