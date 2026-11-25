@@ -92,7 +92,7 @@ if DRY_RUN:
 # ---------------------------------------------------------------------------
 
 # Modify device transformations here
-def decode_register_value(registers, device_type):
+def decode_register_value(registers, device_type, data_type_device):
     """Combine raw Modbus register words into a single value per encoding."""
     if device_type == "adam6051":
         # 32 bit high endian rollover bit
@@ -108,6 +108,21 @@ def decode_register_value(registers, device_type):
         return float_value
     if device_type == "kta282":
         return registers[0]
+    if device_type == "solark":
+        if data_type_device == "uint16":
+            return registers[0]
+        if data_type_device == "int16":
+        # 2s complement for signed int
+            if registers[0] >= (1 << 15):
+                registers[0] -= (1 << 16)
+            return registers[0]
+        if data_type_device == "uint32":
+            return registers[0] + registers[1]
+        if data_type_device == "int32":
+            raw_bytes = struct.pack('<HH', registers[0], registers[1])
+            signed_32bit = struct.unpack('<i', raw_bytes)[0]
+            return signed_32bit
+        
     # Default: 16 bit
     return registers[0]
 
@@ -214,16 +229,17 @@ def load_devices(filepath):
     devices = {}
     with open(filepath, newline="") as f:
         reader = csv.reader(f)
-        next(reader) # skips the header
+        heading_names = next(reader)
+        n_headings = len(heading_names)
         for row in reader:
-            if len(row) != 11:
+            if len(row) != n_headings:
                 raise ValueError(
                     "Invalid entry: incorrect column number."
-                    "\nExpected 11 columns: variable_id,address,count,calculate_delta,device_id,serial,device_type,protocol,ip,port,connection_id."
+                    f"\nExpected {n_headings} columns: {heading_names}"
                     f"\nReceived {len(row)} columns."
                     f"\nReceived: {row}"
                                 )
-            ip_port = row[8].strip() + ":" + parse_str(row[9], ADAM_PORT)
+            ip_port = row[9].strip() + ":" + parse_str(row[10], ADAM_PORT)
             register_points = {
                 "variable": row[0].strip().lower(),
                 "address": parse_int(row[1].strip(), 0),
