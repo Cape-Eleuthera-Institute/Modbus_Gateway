@@ -4,6 +4,7 @@
 pollees.csv 
 # json with last values sent 
 last_values.json
+last_values_dryrun.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
