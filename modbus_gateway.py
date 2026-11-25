@@ -29,7 +29,7 @@ if not AUTH_HASH:
     raise RuntimeError("Missing AUTH_HASH in environment/.env")
 
 ADAM_PORT = 502
-POLL_INTERVAL = 30 # poll every 10 mins #FIXME
+POLL_INTERVAL = 600 # poll every 10 mins
 
 # Dry run mode
 # When true, no data is actually sent to TagoIO. Frames are logged/printed instead
