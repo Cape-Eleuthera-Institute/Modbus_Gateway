@@ -34,8 +34,9 @@ POLL_INTERVAL = 30 # poll every 10 mins #FIXME
 # Dry run mode
 # When true, no data is actually sent to TagoIO. Frames are logged/printed instead
 # so you can see exactly what would be pushed. Enable with DRY_RUN=1 (or true/yes).
-DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() in ("1", "true", "yes")
-
+# Use state file for a temp dry run last values save
+DRY_RUN = os.getenv("DRY_RUN", "false").strip().lower() in ("1", "true", "yes")
+DRY_RUN_STATE_FILE = "last_values_dryrun.json"
 
 def _float_env(name: str, default: float) -> float:
     raw = os.getenv(name)
@@ -86,9 +87,6 @@ if DRY_RUN:
     log.addHandler(_stream_handler)
     log.warning("DRY RUN MODE — no data will be sent to TagoIO. Frames will be logged only.")
 
-# Protects shared JSON state written from multiple device threads.
-state_lock = threading.Lock()
-
 # ---------------------------------------------------------------------------
 # Encoding
 # ---------------------------------------------------------------------------
@@ -132,7 +130,6 @@ def load_last_values_state(filepath):
         log.warning("Failed to load state file %s (%s). Starting empty.", filepath, e)
         return {}
 
-DRY_RUN_STATE_FILE = "last_values.json"
 
 save_lock = threading.Lock()
 
@@ -174,6 +171,15 @@ def save_last_values_state(filepath, state):
                 os.remove(temp_path)
             except OSError:
                 pass
+
+# Protects shared JSON state written from multiple device threads.
+state_lock = threading.Lock()
+
+def persist_state():
+    """Copy shared state under the lock and save it outside the lock."""
+    with state_lock:
+        snapshot = json.loads(json.dumps(state))
+    save_last_values_state(LAST_VALUES_FILE, snapshot)
 
 def compute_delta(current_value, previous_value):
     if previous_value is None:
@@ -487,12 +493,12 @@ def run_device(device):
     device["next_scheduled_tago_reconnect"] = time.time() + RECONNECT_INTERVAL_SEC
 
     with state_lock:
-        serial_state = state.get(serial, {})
-        if isinstance(serial_state, dict):
-            for point in register_points:
-                value = serial_state.get(point["variable"])
+        for point in register_points:
+            point_state = state.get(point["serial"], {})
+            if isinstance(point_state, dict):
+                value = point_state.get(point["variable"])
                 if isinstance(value, int):
-                    device["last_values"][point["variable"]] = value 
+                    device["last_values"][point["variable"]] = value
 
     first_modbus_poll = True
 
@@ -504,10 +510,12 @@ def run_device(device):
             continue
 
         if not first_modbus_poll:
+            device["driver"].close()   # close the old Modbus client first
             device["driver"].connect()
 
         tago_socket = device["tago_socket"]
         driver = device["driver"]
+        state_dirty = False # no new data incoming yet
 
         try:
             # Scheduled reconnect uses its own deadline (not last_reconnect — that updates on every TTL reconnect).
@@ -538,31 +546,26 @@ def run_device(device):
                     continue
 
             for point in register_points:
-                serial = point["serial"]
+                point_serial = point["serial"]
                 try:
                     reg_result = driver.read_registers(
                         address=point["address"],
                         count=point["count"],
                         device_id=point["dev_id"]
                     )
-                except OSError as e:
-                    log.warning(
-                        "[%s] Modbus TCP error (%s: %s) — reconnecting Modbus...",
-                        name, type(e).__name__, e,
-                    )
-                    client.close()
-                    device["modbus"] = device["driver"].connect()
-                    client = device["modbus"]
-                    break
+                    read_failed = reg_result is None or reg_result.isError()
+                    fail_reason = "bad response"
+                except (OSError, ModbusException) as e:
+                    read_failed = True
+                    fail_reason = f"{type(e).__name__}: {e}"
 
-                if reg_result is None or reg_result.isError():
+                if read_failed:
                     log.warning(
-                        "[%s] Modbus read failed for %s (address=%s, count=%s) — reconnecting Modbus...",
-                        name, point["variable"], point["address"], point["count"],
+                         "[%s] Modbus read failed for %s (address=%s, count=%s): %s - reconnecting Modbus...",
+                        name, point["variable"], point["address"], point["count"], fail_reason,
                     )
-                    client.close()
-                    device["modbus"] = device["driver"].connect()
-                    client = device["modbus"]
+                    driver.close()
+                    driver.connect()
                     break
 
                 value = decode_register_value(reg_result.registers, device["device_type"])
@@ -573,7 +576,7 @@ def run_device(device):
 
                 delta = compute_delta(value, previous_value)
 
-                frame = f"PUSH|{AUTH_HASH}|{serial}|[{variable_name}:={value}]\n"
+                frame =  f"PUSH|{AUTH_HASH}|{point_serial}|[{variable_name}:={value}]\n"
                 try:
                     ack = send_frame(tago_socket, frame, ack_timeout=8)
                 except (ConnectionResetError, BrokenPipeError, OSError) as e:
@@ -585,7 +588,7 @@ def run_device(device):
         
 
                 if point["calculate_delta"] != "N": # do not compute deltas when analog input 16 as in 6017
-                    delta_frame = f"PUSH|{AUTH_HASH}|{serial}|[{variable_name}_delta:={delta}]\n"
+                    delta_frame = f"PUSH|{AUTH_HASH}|{point_serial}|[{variable_name}_delta:={delta}]\n"
                     try:
                         delta_ack = send_frame(tago_socket, delta_frame, ack_timeout=8)
                     except (ConnectionResetError, BrokenPipeError, OSError) as e:
@@ -597,9 +600,8 @@ def run_device(device):
 
                 device["last_values"][variable_name] = value
                 with state_lock:
-                    state.setdefault(serial, {})[variable_name] = value
-                    snapshot = json.loads(json.dumps(state))  # copy under lock
-                save_last_values_state(LAST_VALUES_FILE, snapshot)
+                    state.setdefault(point_serial, {})[variable_name] = value
+                state_dirty = True # create a dirty state for unsaved data
             else:
                 device["consecutive_errors"] = 0
 
@@ -621,16 +623,19 @@ def run_device(device):
         except (ModbusException, ConnectionException) as e:
             log.error("[%s] Modbus error (%s) — reconnecting...", name, e)
             try:
-                client.close()
-            except Exception:
-                pass
-            device["modbus"] = device["driver"].connect()
+                driver.close()
+                driver.connect()
 
         except Exception as e:
             log.error("[%s] Unexpected error (%s)", name, e)
             device["consecutive_errors"] += 1
             sleep_reconnect_backoff(device)
             reconnect_tago(device, log_connect=True)
+
+        finally:
+            # one save per poll cycle even if previous failed
+            if state_dirty:
+                persist_state()
 
         maintain_tago_socket_during_idle(device, POLL_INTERVAL)
         first_modbus_poll = False
