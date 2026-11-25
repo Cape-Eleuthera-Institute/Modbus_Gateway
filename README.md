@@ -27,6 +27,12 @@ These devices are used to report on wattage. They can be wired in serial accross
 
 [Elkor WattsOn Manual](https://www.elkor.net/pdfs/WattsOn_Manual.pdf). 
 
+## Solark Inverters
+
+Solark inverters have a variety of data types. Registers aren't listed in the manual. Register numbers can be found via the [mysolark site](mysolark.com) by downloading data in the Operational Data tab. There is also a Github with register numbers [at a dictionary from Paul Bixel's Home Assistant repo](https://github.com/pbix/HA-solark-PV/blob/main/custom_components/solark/solark_register_map.py) (thank you Paul <3).
+
+[More here.](https://sol-ark.com/wp-content/uploads/prod-doc/SK140-0003-002-12K-2P-N-EN-Manual-1-1.pdf) 
+
 ### Quick Network Tips
 * In cmd, run `arp -a` to see the list of devices previously connected to PC. 
 * In cmd, `for /l %i in (1,1,254) do @ping 10.21.1.%i -n 1 -w 100 | find "Reply"` for all devices on network
@@ -79,6 +85,7 @@ In pollees.csv, each entry is a variable to be sent to Tago. Columns:
 - `device_id`: For serial servers connecting of TCP over RTU. A number
 - `serial`: Serial number for the device
 - `device_type`: Model number for device (ed: adam6051). Correspond to devices defined in the `decode_register_value` function in the script
+- `data_type_device`: Device-specific variable that defines how to decode register values. Also defined in `decode_register_value`
 - `protocol`: Network protocol defined in `run_device()`. either 'tcp' or 'rtu_over_tcp'
 - `ip`: Device IP address
 - `port`: Modbus port
@@ -108,14 +115,11 @@ The ADAM manual works with the full 5 digit modbus addresses. The Pymodbus packa
 
 ### Encoding and Unit Conversion by Device Type
 
-The function `decode_register_value()` defines each device's encoding and unit conversion needs. Based on whether a device is sending 16/32/64 bit signals over registers, encoding and unit conversion are nessary. Some devices send information over 2 registers (32 bit) and others a single one (16 bit). 
+The function `decode_register_value()` defines each device's encoding and unit conversion needs. Based on whether a device and it's variables  is sending 16/32/64 bit signals over registers, encoding and unit conversion are nessary. Some devices send information over 2 registers (32 bit) and others a single one (16 bit). 
 
-| Device | Bits | Conversion Formula |
-|-------- | ------- |------- |------- |
-|ADAM 6051 | 32 | registers[0] + registers[1] * 65536 |
-|ADAM 6017 |  16 |(registers[0] / 65535) * 10 |
-|Elkor WattsOn | 32 | 2 unsigned int > single 32 bit signed float with struct package |
-|kta282 | 16 | registers[0] |
+We use the `struct` package to deal with conversions between signed/unsigned values. 
+
+Each device might have multiple data types defined by `data_type_device` in pollees and the `decode_register_value()` function. 
 
 ### Delta behavior and persisted state
 
