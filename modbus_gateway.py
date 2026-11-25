@@ -29,7 +29,7 @@ if not AUTH_HASH:
     raise RuntimeError("Missing AUTH_HASH in environment/.env")
 
 ADAM_PORT = 502
-POLL_INTERVAL = 600 # poll every 10 mins
+POLL_INTERVAL = 30 # poll every 10 mins #FIXME
 
 # Dry run mode
 # When true, no data is actually sent to TagoIO. Frames are logged/printed instead
@@ -132,25 +132,49 @@ def load_last_values_state(filepath):
         log.warning("Failed to load state file %s (%s). Starting empty.", filepath, e)
         return {}
 
-DRY_RUN_STATE_FILE = "last_values.dryrun.json"
+DRY_RUN_STATE_FILE = "last_values.json"
+
+save_lock = threading.Lock()
 
 def save_last_values_state(filepath, state):
+
     if DRY_RUN:
-        filepath = DRY_RUN_STATE_FILE   # same code path, separate file
+        filepath = DRY_RUN_STATE_FILE #create specific file for dry run
     temp_path = f"{filepath}.tmp"
-    with open(temp_path, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, sort_keys=True)
 
-    for attempt in range(1, 6):
+    with save_lock:
         try:
-            os.replace(temp_path, filepath)
-            return
-        except PermissionError as e:
-            log.warning("State save blocked (attempt %s/5): %s", attempt, e)
-            time.sleep(0.2)
-    log.error("State save failed after 5 attempts, skipping this write")
+            payload = json.dumps(state, indent=2, sort_keys=True)
+        except (TypeError, ValueError) as e:
+            log.error("State not serializable (%s), skipping save", e)
+            return False
 
-# FIXME don't like the term rollover bits here??
+        # Atomic path: write temp, then replace
+        for attempt in range(1, 6):
+            try:
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    f.write(payload)
+                os.replace(temp_path, filepath)
+                return True
+            except OSError as e:
+                log.warning("State save blocked (attempt %s/5): %s", attempt, e)
+                time.sleep(0.2 * attempt)
+
+        # Fallback: write directly to the real file (not atomic, but better than nothing)
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(payload)
+            log.warning("State saved via direct write fallback")
+            return True
+        except OSError as e:
+            log.error("State save failed, will retry on next poll: %s", e)
+            return False
+        finally:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
 def compute_delta(current_value, previous_value):
     if previous_value is None:
         return 0
@@ -574,7 +598,8 @@ def run_device(device):
                 device["last_values"][variable_name] = value
                 with state_lock:
                     state.setdefault(serial, {})[variable_name] = value
-                    save_last_values_state(LAST_VALUES_FILE, state)
+                    snapshot = json.loads(json.dumps(state))  # copy under lock
+                save_last_values_state(LAST_VALUES_FILE, snapshot)
             else:
                 device["consecutive_errors"] = 0
 
