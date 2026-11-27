@@ -81,22 +81,22 @@ RECONNECT_BACKOFF_CAP = 30
 # Logging
 # ---------------------------------------------------------------------------
 
-log = logging.getLogger(__name__)
-log.setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 _formatter = logging.Formatter(
     fmt="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 _file_handler = logging.FileHandler(LOG_FILE)
 _file_handler.setFormatter(_formatter)
-log.addHandler(_file_handler)
+logger.addHandler(_file_handler)
 
 if DRY_RUN:
     # Also echo to stdout in dry-run so it's easy to watch live without tailing the log file.
     _stream_handler = logging.StreamHandler()
     _stream_handler.setFormatter(_formatter)
-    log.addHandler(_stream_handler)
-    log.warning("DRY RUN MODE — no data will be sent to TagoIO. Frames will be logged only.")
+    logger.addHandler(_stream_handler)
+    logger.warning("DRY RUN MODE — no data will be sent to TagoIO. Frames will be logged only.")
 
 # ---------------------------------------------------------------------------
 # Encoding
@@ -150,10 +150,10 @@ def load_last_values_state(filepath):
             data = json.load(f)
         if isinstance(data, dict):
             return data
-        log.warning("State file %s is not a JSON object. Starting empty.", filepath)
+        logger.warning("State file %s is not a JSON object. Starting empty.", filepath)
         return {}
     except Exception as e:
-        log.warning("Failed to load state file %s (%s). Starting empty.", filepath, e)
+        logger.warning("Failed to load state file %s (%s). Starting empty.", filepath, e)
         return {}
 
 
@@ -167,7 +167,7 @@ def save_last_values_state(filepath, state):
         try:
             payload = json.dumps(state, indent=2, sort_keys=True)
         except (TypeError, ValueError) as e:
-            log.error("State not serializable (%s), skipping save", e)
+            logger.error("State not serializable (%s), skipping save", e)
             return False
 
         # Atomic path: write temp, then replace
@@ -178,17 +178,17 @@ def save_last_values_state(filepath, state):
                 os.replace(temp_path, filepath)
                 return True
             except OSError as e:
-                log.warning("State save blocked (attempt %s/5): %s", attempt, e)
+                logger.warning("State save blocked (attempt %s/5): %s", attempt, e)
                 time.sleep(0.2 * attempt)
 
         # Fallback: write directly to the real file (not atomic, but better than nothing)
         try:
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(payload)
-            log.warning("State saved via direct write fallback")
+            logger.warning("State saved via direct write fallback")
             return True
         except OSError as e:
-            log.error("State save failed, will retry on next poll: %s", e)
+            logger.error("State save failed, will retry on next poll: %s", e)
             return False
         finally:
             try:
@@ -275,7 +275,7 @@ def load_devices(filepath):
                     "port": port,
                 }
 
-    log.info("Loaded %s device(s) from %s", len(devices), filepath)
+    logger.info("Loaded %s device(s) from %s", len(devices), filepath)
     return devices
 
 # ---------------------------------------------------------------------------
@@ -344,7 +344,7 @@ class ModbusRTUOverTCPDriver:
 def connect_tago(name="", *, log_success=True):
     """Block until Tago TCP connects. In DRY_RUN, returns None immediately (no socket)."""
     if DRY_RUN:
-        log.info("[%s] [dry-run] Skipping real TagoIO connection", name)
+        logger.info("[%s] [dry-run] Skipping real TagoIO connection", name)
         return None
     attempt = 0
     while True:
@@ -363,15 +363,15 @@ def connect_tago(name="", *, log_success=True):
                 try:
                     sock.setsockopt(socket.IPPROTO_TCP, opt, opt_value)
                 except OSError as e:
-                    log.warning("[%s] Keepalive option %s unsupported (%s)", name, opt_name, e)
+                    logger.warning("[%s] Keepalive option %s unsupported (%s)", name, opt_name, e)
             sock.settimeout(10)
             sock.connect((TAGO_HOST, TAGO_PORT))
             msg = f"[{name}] Connected to TagoIO (attempt {attempt})"
-            log.info(msg) if log_success else log.debug(msg)
+            logger.info(msg) if log_success else logger.debug(msg)
             return sock
         except Exception as e:
             wait = min(30, 5 * attempt)
-            log.warning("[%s] TagoIO connect failed (%s) — retrying in %ss", name, e, wait)
+            logger.warning("[%s] TagoIO connect failed (%s) — retrying in %ss", name, e, wait)
             time.sleep(wait)
 
 
@@ -382,7 +382,7 @@ def send_frame(sock, frame, ack_timeout=8):
     and a simulated "OK" ack is returned so the rest of the loop behaves normally.
     """
     if DRY_RUN:
-        log.info("[dry-run] Would send: %s", frame.strip())
+        logger.info("[dry-run] Would send: %s", frame.strip())
         return "OK (simulated)"
     sock.sendall(frame.encode())
     previous_timeout = sock.gettimeout()
@@ -414,9 +414,9 @@ def reconnect_tago(device, *, log_connect=True):
     try:
         ack = send_frame(device["tago_socket"], ping_frame, ack_timeout=6)
         if ack and "ERR" in ack:
-            log.warning("[%s] Post-connect PING error (%s)", name, ack)
+            logger.warning("[%s] Post-connect PING error (%s)", name, ack)
     except OSError as e:
-        log.warning("[%s] Post-connect PING failed (%s)", name, e)
+        logger.warning("[%s] Post-connect PING failed (%s)", name, e)
     device["last_ping"] = time.time()
 
 
@@ -425,7 +425,7 @@ def sleep_reconnect_backoff(device):
     errors = max(1, device.get("consecutive_errors", 1))
     raw_delay = min(RECONNECT_BACKOFF_CAP, RECONNECT_BACKOFF_BASE * (2 ** (errors - 1)))
     delay = random.uniform(raw_delay * 0.5, raw_delay)
-    log.info(
+    logger.info(
         "[%s] Reconnect backoff: sleeping %.1fs (errors=%s, base=%ss)",
         device["name"], delay, errors, raw_delay,
     )
@@ -452,22 +452,22 @@ def maintain_tago_socket_during_idle(device, total_sleep_seconds):
         now = time.time()
         try:
             if now - device["tago_connect_time"] >= TAGO_TTL_RECONNECT_BEFORE:
-                log.debug("[%s] Proactive Tago reconnect (connection TTL)", name)
+                logger.debug("[%s] Proactive Tago reconnect (connection TTL)", name)
                 reconnect_tago(device, log_connect=False)
                 continue
 
             if now - device["last_ping"] >= TAGO_KEEPALIVE_INTERVAL:
                 ping_frame = f"PING|{AUTH_HASH}|{serial}\n"
                 ack = send_frame(device["tago_socket"], ping_frame, ack_timeout=6)
-                log.debug("[%s] Idle PING: %s", name, ack or "<no-ack>")
+                logger.debug("[%s] Idle PING: %s", name, ack or "<no-ack>")
                 device["last_ping"] = time.time()
                 if ack and "ERR" in ack:
-                    log.warning("[%s] Idle PING error (%s) — reconnecting...", name, ack)
+                    logger.warning("[%s] Idle PING error (%s) — reconnecting...", name, ack)
                     reconnect_tago(device, log_connect=False)
                     continue
 
         except (ConnectionResetError, BrokenPipeError, OSError) as e:
-            log.warning("[%s] Tago idle keepalive failed (%s) — reconnecting...", name, e)
+            logger.warning("[%s] Tago idle keepalive failed (%s) — reconnecting...", name, e)
             reconnect_tago(device, log_connect=False)
             continue
 
@@ -478,7 +478,7 @@ def maintain_tago_socket_during_idle(device, total_sleep_seconds):
 
     margin = 1.0
     if time.time() - device["tago_connect_time"] >= TAGO_TTL_RECONNECT_BEFORE - margin:
-        log.debug("[%s] Refreshing Tago session before uplink (near TTL)", name)
+        logger.debug("[%s] Refreshing Tago session before uplink (near TTL)", name)
         reconnect_tago(device, log_connect=False)
 
 
@@ -513,7 +513,7 @@ def run_device(device):
         driver = ModbusTCPDriver(ip=device["ip"], port=device["port"])
 
     device["driver"] = driver
-    log.info("[%s] Connecting via %s...", name, device["protocol"])
+    logger.info("[%s] Connecting via %s...", name, device["protocol"])
     driver.connect()
 
     device["tago_socket"] = None
@@ -536,7 +536,7 @@ def run_device(device):
     while True:
         if time.time() < device["cooldown_until"]:
             rem = device["cooldown_until"] - time.time()
-            log.info("[%s] Cooldown — %.0fs remaining", name, rem)
+            logger.info("[%s] Cooldown — %.0fs remaining", name, rem)
             time.sleep(5)
             continue
 
@@ -551,13 +551,13 @@ def run_device(device):
         try:
             # Scheduled reconnect uses its own deadline (not last_reconnect — that updates on every TTL reconnect).
             if time.time() >= device["next_scheduled_tago_reconnect"]:
-                log.info("[%s] Scheduled Tago reconnect (%ss interval)", name, RECONNECT_INTERVAL_SECONDS)
+                logger.info("[%s] Scheduled Tago reconnect (%ss interval)", name, RECONNECT_INTERVAL_SECONDS)
                 reconnect_tago(device, log_connect=True)
                 tago_socket = device["tago_socket"]
                 device["next_scheduled_tago_reconnect"] = time.time() + RECONNECT_INTERVAL_SECONDS
 
             if time.time() - device["tago_connect_time"] >= TAGO_TTL_RECONNECT_BEFORE:
-                log.debug("[%s] Proactive Tago reconnect before uplink (TTL)", name)
+                logger.debug("[%s] Proactive Tago reconnect before uplink (TTL)", name)
                 reconnect_tago(device, log_connect=False)
                 tago_socket = device["tago_socket"]
 
@@ -567,10 +567,10 @@ def run_device(device):
                     ack = send_frame(tago_socket, ping_frame, ack_timeout=6)
                 except (ConnectionResetError, BrokenPipeError, OSError) as e:
                     raise ConnectionAbortedError(f"Tago PING failed: {e}") from e
-                log.info("[%s] PING: %s", name, ack or "<no-ack>")
+                logger.info("[%s] PING: %s", name, ack or "<no-ack>")
                 device["last_ping"] = time.time()
                 if ack and "ERR" in ack:
-                    log.warning("[%s] PING error (%s) — reconnecting...", name, ack)
+                    logger.warning("[%s] PING error (%s) — reconnecting...", name, ack)
                     reconnect_tago(device, log_connect=True)
                     tago_socket = device["tago_socket"]
                     time.sleep(2)
@@ -591,7 +591,7 @@ def run_device(device):
                     fail_reason = f"{type(e).__name__}: {e}"
 
                 if read_failed:
-                    log.warning(
+                    logger.warning(
                          "[%s] Modbus read failed for %s (address=%s, count=%s): %s - reconnecting Modbus...",
                         name, point["variable"], point["address"], point["count"], fail_reason,
                     )
@@ -610,8 +610,8 @@ def run_device(device):
                     ack = send_frame(tago_socket, frame, ack_timeout=8)
                 except (ConnectionResetError, BrokenPipeError, OSError) as e:
                     raise ConnectionAbortedError(f"Tago PUSH failed: {e}") from e
-                log.info("[%s] Sent: %s", name, frame.strip())
-                log.info("[%s] ACK:  %s", name, ack or "<no-ack>")
+                logger.info("[%s] Sent: %s", name, frame.strip())
+                logger.info("[%s] ACK:  %s", name, ack or "<no-ack>")
                 if ack and "ERR" in ack:
                     raise ConnectionAbortedError(f"TagoIO returned error ACK: {ack}")
         
@@ -622,8 +622,8 @@ def run_device(device):
                         delta_ack = send_frame(tago_socket, delta_frame, ack_timeout=8)
                     except (ConnectionResetError, BrokenPipeError, OSError) as e:
                         raise ConnectionAbortedError(f"Tago PUSH (delta) failed: {e}") from e
-                    log.info("[%s] Sent: %s", name, delta_frame.strip()) 
-                    log.info("[%s] ACK:  %s", name, delta_ack or "<no-ack>")
+                    logger.info("[%s] Sent: %s", name, delta_frame.strip()) 
+                    logger.info("[%s] ACK:  %s", name, delta_ack or "<no-ack>")
                     if delta_ack and "ERR" in delta_ack:
                         raise ConnectionAbortedError(f"TagoIO returned error ACK: {delta_ack}")
 
@@ -636,26 +636,26 @@ def run_device(device):
 
         except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, OSError) as e:
             device["consecutive_errors"] += 1
-            log.error(
+            logger.error(
                 "[%s] TagoIO connection lost (%s: %s) — error #%s",
                 name, type(e).__name__, e, device["consecutive_errors"],
             )
             if device["consecutive_errors"] >= 5:
                 device["cooldown_until"] = time.time() + 60
                 device["consecutive_errors"] = 0
-                log.warning("[%s] Too many errors — cooling down for 60s", name)
+                logger.warning("[%s] Too many errors — cooling down for 60s", name)
             else:
                 sleep_reconnect_backoff(device)
                 reconnect_tago(device, log_connect=True)
                 tago_socket = device["tago_socket"]
 
         except (ModbusException, ConnectionException) as e:
-            log.error("[%s] Modbus error (%s) — reconnecting...", name, e)
+            logger.error("[%s] Modbus error (%s) — reconnecting...", name, e)
             driver.close()
             driver.connect()
 
         except Exception as e:
-            log.error("[%s] Unexpected error (%s)", name, e)
+            logger.error("[%s] Unexpected error (%s)", name, e)
             device["consecutive_errors"] += 1
             sleep_reconnect_backoff(device)
             reconnect_tago(device, log_connect=True)
@@ -678,10 +678,10 @@ state = load_last_values_state(STATE_FILE)
 
 for _dev in devices:
     threading.Thread(target=run_device, args=(devices[_dev],), daemon=True).start()
-    log.info("Started thread for [%s]", devices[_dev]["name"])
+    logger.info("Started thread for [%s]", devices[_dev]["name"])
 
 try:
     while True:
         time.sleep(1)
 except KeyboardInterrupt:
-    log.info("Stopping...")
+    logger.info("Stopping...")
