@@ -6,6 +6,9 @@ pollees.csv
 last_values.json
 last_values_dryrun.json
 
+# test file
+test.py
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
