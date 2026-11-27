@@ -123,10 +123,8 @@ def decode_register_value(registers, device_type, data_type_device):
         if data_type_device == "uint16":
             return registers[0]
         if data_type_device == "int16":
-        # 2s complement for signed int
-            if registers[0] >= (1 << 15):
-                registers[0] -= (1 << 16)
-            return registers[0]
+        # 2s complement for signed int with struct
+           return struct.unpack(">h", struct.pack(">H", registers[0]))[0]
         if data_type_device == "uint32":
             # concat two registers
             return registers[0] + registers[1]
