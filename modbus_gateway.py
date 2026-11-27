@@ -237,7 +237,7 @@ def parse_str(value, default):
 def load_devices(filepath):
     """Build devices keyed by ip:port, each with a list of register points."""
     devices = {}
-    with open(filepath, newline="") as f:
+    with open(filepath, newline="",  encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
 
         missing = [c for c in REQUIRED_COLUMNS if c not in (reader.fieldnames or [])]
@@ -350,8 +350,8 @@ def connect_tago(name="", *, log_success=True):
     while True:
         attempt += 1
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            tago_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            tago_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             for opt_name, opt_value in (
                 ("TCP_KEEPIDLE", 30),
                 ("TCP_KEEPINTVL", 5),
@@ -361,38 +361,39 @@ def connect_tago(name="", *, log_success=True):
                 if opt is None:
                     continue
                 try:
-                    sock.setsockopt(socket.IPPROTO_TCP, opt, opt_value)
+                    tago_socket.setsockopt(socket.IPPROTO_TCP, opt, opt_value)
                 except OSError as e:
                     logger.warning("[%s] Keepalive option %s unsupported (%s)", name, opt_name, e)
-            sock.settimeout(10)
-            sock.connect((TAGO_HOST, TAGO_PORT))
+            tago_socket.settimeout(10)
+            tago_socket.connect((TAGO_HOST, TAGO_PORT))
             msg = f"[{name}] Connected to TagoIO (attempt {attempt})"
             logger.info(msg) if log_success else logger.debug(msg)
-            return sock
+            return tago_socket
         except Exception as e:
             wait = min(30, 5 * attempt)
             logger.warning("[%s] TagoIO connect failed (%s) — retrying in %ss", name, e, wait)
             time.sleep(wait)
 
 
-def send_frame(sock, frame, ack_timeout=8):
+def send_frame(tago_socket, frame, ack_timeout=8):
     """
-    Send one line-terminated frame; return ACK text or empty string on recv timeout.
-    In DRY_RUN (sock is None), nothing is sent over the wire — the frame is logged
-    and a simulated "OK" ack is returned so the rest of the loop behaves normally.
+    Send one line-terminated frame; return acknowledgement text or empty string on recv timeout.
+    In DRY_RUN (tago_socket is None), nothing is sent over the wire — the frame is logged
+    and a simulated "OK" acknowledgement is returned so the rest of the loop behaves normally.
     """
     if DRY_RUN:
         logger.info("[dry-run] Would send: %s", frame.strip())
         return "OK (simulated)"
-    sock.sendall(frame.encode())
-    previous_timeout = sock.gettimeout()
+    
+    tago_socket.sendall(frame.encode())
+    previous_timeout = tago_socket.gettimeout()
     try:
-        sock.settimeout(ack_timeout)
-        return sock.recv(1024).decode().strip()
+        tago_socket.settimeout(ack_timeout)
+        return tago_socket.recv(1024).decode().strip()
     except socket.timeout:
         return ""
     finally:
-        sock.settimeout(previous_timeout)
+        tago_socket.settimeout(previous_timeout)
 
 
 def reconnect_tago(device, *, log_connect=True):
@@ -412,9 +413,9 @@ def reconnect_tago(device, *, log_connect=True):
     device["tago_connect_time"] = time.time()
     ping_frame = f"PING|{AUTH_HASH}|{device['default_serial']}\n"
     try:
-        ack = send_frame(device["tago_socket"], ping_frame, ack_timeout=6)
-        if ack and "ERR" in ack:
-            logger.warning("[%s] Post-connect PING error (%s)", name, ack)
+        acknowledgement = send_frame(device["tago_socket"], ping_frame, ack_timeout=6)
+        if acknowledgement and "ERR" in acknowledgement:
+            logger.warning("[%s] Post-connect PING error (%s)", name, acknowledgement)
     except OSError as e:
         logger.warning("[%s] Post-connect PING failed (%s)", name, e)
     device["last_ping"] = time.time()
@@ -458,11 +459,11 @@ def maintain_tago_socket_during_idle(device, total_sleep_seconds):
 
             if now - device["last_ping"] >= TAGO_KEEPALIVE_INTERVAL:
                 ping_frame = f"PING|{AUTH_HASH}|{serial}\n"
-                ack = send_frame(device["tago_socket"], ping_frame, ack_timeout=6)
-                logger.debug("[%s] Idle PING: %s", name, ack or "<no-ack>")
+                acknowledgement = send_frame(device["tago_socket"], ping_frame, ack_timeout=6)
+                logger.debug("[%s] Idle PING: %s", name, acknowledgement or "<no-ack>")
                 device["last_ping"] = time.time()
-                if ack and "ERR" in ack:
-                    logger.warning("[%s] Idle PING error (%s) — reconnecting...", name, ack)
+                if acknowledgement and "ERR" in acknowledgement:
+                    logger.warning("[%s] Idle PING error (%s) — reconnecting...", name, acknowledgement)
                     reconnect_tago(device, log_connect=False)
                     continue
 
@@ -564,13 +565,13 @@ def run_device(device):
             if time.time() - device["last_ping"] >= TAGO_KEEPALIVE_INTERVAL:
                 ping_frame = f"PING|{AUTH_HASH}|{serial}\n"
                 try:
-                    ack = send_frame(tago_socket, ping_frame, ack_timeout=6)
+                    acknowledgement = send_frame(tago_socket, ping_frame, ack_timeout=6)
                 except (ConnectionResetError, BrokenPipeError, OSError) as e:
                     raise ConnectionAbortedError(f"Tago PING failed: {e}") from e
-                logger.info("[%s] PING: %s", name, ack or "<no-ack>")
+                logger.info("[%s] PING: %s", name, acknowledgement or "<no-ack>")
                 device["last_ping"] = time.time()
-                if ack and "ERR" in ack:
-                    logger.warning("[%s] PING error (%s) — reconnecting...", name, ack)
+                if acknowledgement and "ERR" in acknowledgement:
+                    logger.warning("[%s] PING error (%s) — reconnecting...", name, acknowledgement)
                     reconnect_tago(device, log_connect=True)
                     tago_socket = device["tago_socket"]
                     time.sleep(2)
@@ -607,13 +608,13 @@ def run_device(device):
 
                 frame =  f"PUSH|{AUTH_HASH}|{point_serial}|[{variable_name}:={value}]\n"
                 try:
-                    ack = send_frame(tago_socket, frame, ack_timeout=8)
+                    acknowledgement = send_frame(tago_socket, frame, ack_timeout=8)
                 except (ConnectionResetError, BrokenPipeError, OSError) as e:
                     raise ConnectionAbortedError(f"Tago PUSH failed: {e}") from e
                 logger.info("[%s] Sent: %s", name, frame.strip())
-                logger.info("[%s] ACK:  %s", name, ack or "<no-ack>")
-                if ack and "ERR" in ack:
-                    raise ConnectionAbortedError(f"TagoIO returned error ACK: {ack}")
+                logger.info("[%s] ACK:  %s", name, acknowledgement or "<no-ack>")
+                if acknowledgement and "ERR" in acknowledgement:
+                    raise ConnectionAbortedError(f"TagoIO returned error ACK: {acknowledgement}")
         
 
                 if point["calculate_delta"] != "N": # do not compute deltas when analog input 16 as in 6017
