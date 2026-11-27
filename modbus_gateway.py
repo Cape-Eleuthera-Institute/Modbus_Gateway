@@ -53,9 +53,25 @@ TAGO_TTL_RECONNECT_BEFORE = _float_env("TAGO_TTL_RECONNECT_BEFORE", 9.0)
 # Optional periodic full Tago reconnect for hygiene (independent of TTL churn).
 RECONNECT_INTERVAL_SECONDS = int(os.getenv("TAGO_SCHEDULED_RECONNECT_SEC", "3600"))
 
+# TagoTIP host address and port
 TAGO_HOST = "tcp.tip.us-e1.tago.io"
 TAGO_PORT = 5693
+
+# Define pollees file name and requir
 DEVICES_FILE = "pollees.csv"
+REQUIRED_COLUMNS = ["variable_id", 
+                    "address", 
+                    "count", 
+                    "calculate_delta", 
+                    "device_id",
+                    "serial", 
+                    "device_type", 
+                    "data_type_device", 
+                    "protocol", 
+                    "ip",
+                    "port", 
+                    "connection_id"]
+
 LOG_FILE = "poller.log"
 
 RECONNECT_BACKOFF_BASE = 1
@@ -217,43 +233,49 @@ def parse_str(value, default):
         return default
     return text
 
+
 def load_devices(filepath):
-    """Build dict of dicts of devices, organized by IP/port, with register_points[] used by the poll loop."""
+    """Build devices keyed by ip:port, each with a list of register points."""
     devices = {}
     with open(filepath, newline="") as f:
-        reader = csv.reader(f)
-        heading_names = next(reader)
-        n_headings = len(heading_names)
+        reader = csv.DictReader(f)
+
+        missing = [c for c in REQUIRED_COLUMNS if c not in (reader.fieldnames or [])]
+        if missing:
+            raise ValueError(f"{filepath} is missing columns: {missing}")
+
         for row in reader:
-            if len(row) != n_headings:
-                raise ValueError(
-                    "Invalid entry: incorrect column number."
-                    f"\nExpected {n_headings} columns: {heading_names}"
-                    f"\nReceived {len(row)} columns."
-                    f"\nReceived: {row}"
-                                )
-            ip_port = row[9].strip() + ":" + parse_str(row[10], DEFAULT_MODBUS_PORT)
-            register_points = {
-                "variable": row[0].strip().lower(),
-                "address": parse_int(row[1].strip(), 0),
-                "count": parse_int(row[2].strip(), 0),
-                "calculate_delta": row[3].strip(),
-                "dev_id": parse_int(row[4].strip(), "NA"),
-                "serial": row[5].strip(),
-                "data_type_device": row[7].strip()
+            if None in row or None in row.values():
+                raise ValueError(f"Row has the wrong number of columns: {row}")
+
+            ip = row["ip"].strip()
+            port = parse_int(row["port"], DEFAULT_MODBUS_PORT)
+            device_key = f"{ip}:{port}"
+
+            register_point = {
+                "variable": row["variable_id"].strip().lower(),
+                "address": parse_int(row["address"], 0),
+                "count": parse_int(row["count"], 0),
+                "calculate_delta": row["calculate_delta"].strip(),
+                "dev_id": parse_int(row["device_id"], "NA"),
+                "serial": row["serial"].strip(),
+                "data_type_device": row["data_type_device"].strip(),
             }
-            if ip_port in devices:
-                devices[ip_port]["register_points"].append(register_points)
+
+            if device_key in devices:
+                devices[device_key]["register_points"].append(register_point)
             else:
-                devices[ip_port] = {
-                    "name": row[11].strip(),
-                    "protocol": parse_str(row[8], "tcp"),
-                    "device_type": parse_str(row[6], "unknown"),
-                    "register_points": [register_points],
-                    "default_serial": row[5].strip(),
-                    "ip": row[9].strip(),
-                    "port": parse_str(row[10], DEFAULT_MODBUS_PORT)}
-    log.info(f"Loaded {len(devices)} device(s) from {filepath}")
+                devices[device_key] = {
+                    "name": row["connection_id"].strip(),
+                    "protocol": parse_str(row["protocol"], "tcp"),
+                    "device_type": parse_str(row["device_type"], "unknown"),
+                    "register_points": [register_point],
+                    "default_serial": row["serial"].strip(),
+                    "ip": ip,
+                    "port": port,
+                }
+
+    log.info("Loaded %s device(s) from %s", len(devices), filepath)
     return devices
 
 # ---------------------------------------------------------------------------
