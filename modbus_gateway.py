@@ -128,8 +128,10 @@ def decode_register_value(registers, device_type, data_type_device):
                 registers[0] -= (1 << 16)
             return registers[0]
         if data_type_device == "uint32":
+            # concat two registers
             return registers[0] + registers[1]
         if data_type_device == "int32":
+            # use struct to convert to signed 32 bit from unsigned short ints 
             raw_bytes = struct.pack('<HH', registers[0], registers[1])
             signed_32bit = struct.unpack('<i', raw_bytes)[0]
             return signed_32bit
