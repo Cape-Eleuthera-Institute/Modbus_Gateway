@@ -290,7 +290,6 @@ class ModbusRTUOverTCPDriver:
         self.client = None
 
     def connect(self):
-        from pymodbus.client import ModbusTcpClient
         while True:
             # framer="rtu" tells pymodbus to use RTU framing over the TCP socket
             self.client = ModbusTcpClient(
@@ -507,7 +506,7 @@ def run_device(device):
             point_state = state.get(point["serial"], {})
             if isinstance(point_state, dict):
                 value = point_state.get(point["variable"])
-                if isinstance(value, int):
+                if isinstance(value, (int, float)):
                     device["last_values"][point["variable"]] = value
 
     first_modbus_poll = True
