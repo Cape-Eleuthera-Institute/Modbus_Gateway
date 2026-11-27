@@ -28,15 +28,15 @@ AUTH_HASH = os.getenv("AUTH_HASH")
 if not AUTH_HASH:
     raise RuntimeError("Missing AUTH_HASH in environment/.env")
 
-ADAM_PORT = 502
-POLL_INTERVAL = 600 # poll every 10 mins
+DEFAULT_MODBUS_PORT = 502
+POLL_INTERVAL_SECONDS = 600 # poll every 10 mins
 
 # Dry run mode
 # When true, no data is actually sent to TagoIO. Frames are logged/printed instead
 # so you can see exactly what would be pushed. Enable with DRY_RUN=1 (or true/yes).
 # Use state file for a temp dry run last values save
 DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() in ("1", "true", "yes")
-DRY_RUN_STATE_FILE = "last_values_dryrun.json"
+STATE_FILE = "last_values_dryrun.json" if DRY_RUN else "last_values.json"
 
 def _float_env(name: str, default: float) -> float:
     raw = os.getenv(name)
@@ -51,13 +51,12 @@ TAGO_KEEPALIVE_INTERVAL = _float_env("TAGO_KEEPALIVE_INTERVAL", 4.0)
 TAGO_TTL_RECONNECT_BEFORE = _float_env("TAGO_TTL_RECONNECT_BEFORE", 9.0)
 
 # Optional periodic full Tago reconnect for hygiene (independent of TTL churn).
-RECONNECT_INTERVAL_SEC = int(os.getenv("TAGO_SCHEDULED_RECONNECT_SEC", "3600"))
+RECONNECT_INTERVAL_SECONDS = int(os.getenv("TAGO_SCHEDULED_RECONNECT_SEC", "3600"))
 
 TAGO_HOST = "tcp.tip.us-e1.tago.io"
 TAGO_PORT = 5693
 DEVICES_FILE = "pollees.csv"
 LOG_FILE = "poller.log"
-LAST_VALUES_FILE = "last_values.json"
 
 RECONNECT_BACKOFF_BASE = 1
 RECONNECT_BACKOFF_CAP = 30
@@ -146,8 +145,6 @@ save_lock = threading.Lock()
 
 def save_last_values_state(filepath, state):
 
-    if DRY_RUN:
-        filepath = DRY_RUN_STATE_FILE #create specific file for dry run
     temp_path = f"{filepath}.tmp"
 
     with save_lock:
@@ -190,7 +187,7 @@ def persist_state():
     """Copy shared state under the lock and save it outside the lock."""
     with state_lock:
         snapshot = json.loads(json.dumps(state))
-    save_last_values_state(LAST_VALUES_FILE, snapshot)
+    save_last_values_state(STATE_FILE, snapshot)
 
 def compute_delta(current_value, previous_value):
     if previous_value is None:
@@ -235,13 +232,13 @@ def load_devices(filepath):
                     f"\nReceived {len(row)} columns."
                     f"\nReceived: {row}"
                                 )
-            ip_port = row[9].strip() + ":" + parse_str(row[10], ADAM_PORT)
+            ip_port = row[9].strip() + ":" + parse_str(row[10], DEFAULT_MODBUS_PORT)
             register_points = {
                 "variable": row[0].strip().lower(),
                 "address": parse_int(row[1].strip(), 0),
                 "count": parse_int(row[2].strip(), 0),
                 "calculate_delta": row[3].strip(),
-                "dev_id": parse_int(row[4].strip(), "NA"), # maps to `slave=` in pymodbus
+                "dev_id": parse_int(row[4].strip(), "NA"),
                 "serial": row[5].strip(),
                 "data_type_device": row[7].strip()
             }
@@ -255,7 +252,7 @@ def load_devices(filepath):
                     "register_points": [register_points],
                     "default_serial": row[5].strip(),
                     "ip": row[9].strip(),
-                    "port": parse_str(row[10], ADAM_PORT)}
+                    "port": parse_str(row[10], DEFAULT_MODBUS_PORT)}
     log.info(f"Loaded {len(devices)} device(s) from {filepath}")
     return devices
 
@@ -476,7 +473,7 @@ def maintain_tago_socket_during_idle(device, total_sleep_seconds):
 def run_device(device):
     """
     Loop forever: (optional Modbus refresh) > Tago housekeeping > read registers > PUSH >
-    sleep POLL_INTERVAL on Tago-only maintenance > repeat.
+    sleep POLL_INTERVAL_SECONDS on Tago-only maintenance > repeat.
 
     first_modbus_poll skips Modbus refresh on the very first iteration (fresh connect above).
     """
@@ -503,7 +500,7 @@ def run_device(device):
     device["consecutive_errors"] = 0
     device["cooldown_until"] = 0
     device["last_values"] = {}
-    device["next_scheduled_tago_reconnect"] = time.time() + RECONNECT_INTERVAL_SEC
+    device["next_scheduled_tago_reconnect"] = time.time() + RECONNECT_INTERVAL_SECONDS
 
     with state_lock:
         for point in register_points:
@@ -533,10 +530,10 @@ def run_device(device):
         try:
             # Scheduled reconnect uses its own deadline (not last_reconnect — that updates on every TTL reconnect).
             if time.time() >= device["next_scheduled_tago_reconnect"]:
-                log.info("[%s] Scheduled Tago reconnect (%ss interval)", name, RECONNECT_INTERVAL_SEC)
+                log.info("[%s] Scheduled Tago reconnect (%ss interval)", name, RECONNECT_INTERVAL_SECONDS)
                 reconnect_tago(device, log_connect=True)
                 tago_socket = device["tago_socket"]
-                device["next_scheduled_tago_reconnect"] = time.time() + RECONNECT_INTERVAL_SEC
+                device["next_scheduled_tago_reconnect"] = time.time() + RECONNECT_INTERVAL_SECONDS
 
             if time.time() - device["tago_connect_time"] >= TAGO_TTL_RECONNECT_BEFORE:
                 log.debug("[%s] Proactive Tago reconnect before uplink (TTL)", name)
@@ -584,8 +581,6 @@ def run_device(device):
                 value = decode_register_value(reg_result.registers, device["device_type"], point["data_type_device"])
                 variable_name = point["variable"]
                 previous_value = device["last_values"].get(variable_name)
-
-                encoding = point.get("encoding", "uint16") #uint16 as default if no encoding provided
 
                 delta = compute_delta(value, previous_value)
 
@@ -649,7 +644,7 @@ def run_device(device):
             if state_dirty:
                 persist_state()
 
-        maintain_tago_socket_during_idle(device, POLL_INTERVAL)
+        maintain_tago_socket_during_idle(device, POLL_INTERVAL_SECONDS)
         first_modbus_poll = False
 
 
@@ -658,7 +653,7 @@ def run_device(device):
 # ---------------------------------------------------------------------------
 
 devices = load_devices(DEVICES_FILE)
-state = load_last_values_state(LAST_VALUES_FILE)
+state = load_last_values_state(STATE_FILE)
 
 for _dev in devices:
     threading.Thread(target=run_device, args=(devices[_dev],), daemon=True).start()
